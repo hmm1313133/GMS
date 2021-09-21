@@ -1,6 +1,6 @@
 package channel
 
-type ChannelServer struct {
+type Server struct {
 	ServerStartTime int64
 }
 
