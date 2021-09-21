@@ -23,7 +23,7 @@ func (is *InputStreamByteStream) GetBytesRead() (read int64) {
 }
 
 func (is *InputStreamByteStream) Available() (read int64) {
-	read = is.Bs.Size() - is.Read
+	read = int64(is.Bs.Len())
 	return
 }
 

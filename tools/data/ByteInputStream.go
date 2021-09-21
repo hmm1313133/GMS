@@ -1,7 +1,7 @@
 package data
 
 type ByteInputStream interface {
-	readByte() int
-	getBytesRead() int64
-	available() int64
+	ReadByte() (byte, error)
+	GetBytesRead() int64
+	Available() int64
 }
