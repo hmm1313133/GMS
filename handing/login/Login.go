@@ -18,6 +18,7 @@ type Server struct {
 }
 
 func (s *Server) RunStartupConfigurations() {
+
 	p := goroutine.Default()
 	defer p.Release()
 
