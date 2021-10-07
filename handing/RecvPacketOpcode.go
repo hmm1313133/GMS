@@ -1,5 +1,6 @@
 package handing
 
+// RecvPacketOpcode 已弃用
 type RecvPacketOpcode struct {
 	RecvPacketOpcodeType
 }
