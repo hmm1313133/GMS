@@ -1,20 +1,30 @@
 package input
 
+import "bytes"
+
 type GenericSeekableLittleEndianAccessor struct {
 	GenericLittleEndianAccessor
-	Bs SeekableInputStreamByteStream
+	Si SeekableInputStreamByteStream
 }
 
-func (g *GenericSeekableLittleEndianAccessor) init(bs SeekableInputStreamByteStream) {
-	g.Bs = bs
+func NewGenericSeekableLittleEndianAccessor(bs *bytes.Reader, si SeekableInputStreamByteStream) *GenericSeekableLittleEndianAccessor {
+	gslea := GenericSeekableLittleEndianAccessor{
+		Si: si,
+	}
+	gslea.Bs = bs
+	return &gslea
+}
+
+func (g *GenericSeekableLittleEndianAccessor) init(si SeekableInputStreamByteStream) {
+	g.Si = si
 }
 
 func (g *GenericSeekableLittleEndianAccessor) Seek(offset int) {
-	g.Bs.Seek(offset)
+	g.Si.Seek(offset)
 }
 
 func (g *GenericSeekableLittleEndianAccessor) GetPosition() int64 {
-	return g.Bs.GetPosition()
+	return g.Si.GetPosition()
 }
 
 func (g *GenericSeekableLittleEndianAccessor) Skip(n int) {

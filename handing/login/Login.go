@@ -1,12 +1,13 @@
 package login
 
 import (
+	"GMS/tools/data/input"
+	"bytes"
 	"encoding/hex"
 	"github.com/panjf2000/gnet"
 	"github.com/panjf2000/gnet/pool/goroutine"
 	"log"
 	"math/rand"
-	"time"
 )
 
 type Server struct {
@@ -30,11 +31,16 @@ func (s *Server) React(frame []byte, c gnet.Conn) (out []byte, action gnet.Actio
 	data := append([]byte{}, frame...)
 
 	// Use ants pool to unblock the event-loop.
-	_ = s.pool.Submit(func() {
+	/*_ = s.pool.Submit(func() {
 		time.Sleep(1 * time.Second)
 		c.AsyncWrite(data)
-	})
+	})*/
 
+	// 该部分为Java版 MapleServerHandler 中的 messageReceived 方法
+	slea := input.NewGenericSeekableLittleEndianAccessor(bytes.NewReader(data), input.NewByteArrayByteStream(data))
+	if slea.Available() < 2 {
+		return
+	}
 	return
 }
 
