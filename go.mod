@@ -3,6 +3,7 @@ module GMS
 go 1.16
 
 require (
+	github.com/obity/properties v1.0.1
 	github.com/panjf2000/gnet v1.5.3
 	go.uber.org/atomic v1.9.0 // indirect
 	go.uber.org/zap v1.19.1 // indirect
