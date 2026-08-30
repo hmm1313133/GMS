@@ -1,0 +1,65 @@
+# GMS 服务端配置 - 对齐原 079MAX2 的 Load/*.ini（ZEV.* 键）
+# Java 侧 ServerProperties/OtherSettings 已并入本文件（见 internal/config/config.go）
+
+[server]
+world_name = "GMS"
+world_flag = 3
+# 对应 Load/服务端加载事件.ini 的 Events=
+event_scripts = ["Boats", "OrbisPQ", "ZakumBattle"]
+# 世界列表（原版 079MAX2 是 GUI 上的 20 个世界开关：蓝蜗牛=0..花蘑菇=19；
+# 这里每个启用的世界一条 [[server.worlds]]，按 Java 0..19 顺序输出 SERVERLIST）。
+# state 对应 ZEV.<世界>状态（登录界面热度显示 0/1/2，原版 Load/游戏频道状态显示.txt）。
+[[server.worlds]]
+id = 0
+state = 1
+# 世界横幅（Java LoginServer.eventMessage，双爆频道提示文案；空 = 无）
+event_message = ""
+# 在线人数上限（SERVERSTATUS 满员/繁忙判定；Java LoginServer.userLimit）
+user_limit = 500
+# 登录界面气球广告（Java GameConstants.getBalloons；原版默认无）
+# [[server.balloons]]
+# x = 40
+# y = 300
+# message = "欢迎"
+
+[login]
+host = "0.0.0.0"
+port = 8484            # ZEV.LPort
+auto_register = true   # ZEV.自动注册
+super_password = false
+allow_duplicate_ip = true
+
+[channel]
+host = "0.0.0.0"
+port = 7575            # ZEV.Port
+count = 5              # ZEV.Count
+cashshop_port = 8600
+
+[database]
+# 开发/冒烟默认 SQLite（modernc.org/sqlite 纯 Go 驱动，首连自动建 accounts 表，无需 mysqld）。
+# 保真/生产切回原版 MySQL 5.5 时改：
+#   driver = "mysql"
+#   dsn = "root:root@tcp(127.0.0.1:3306)/079-max2?charset=utf8mb4&parseTime=true&loc=Local"
+driver = "sqlite"
+dsn = "data/gms.db?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)"
+max_open_conns = 8
+max_idle_conns = 4
+conn_max_lifetime_sec = 1800
+
+[game]
+server_message = "GMS Go 服务端测试中"   # ZEV.ServerMessage
+exp_rate = 20      # ZEV.Exp
+meso_rate = 20     # ZEV.Meso
+drop_rate = 5      # ZEV.Drop
+notice_interval_min = 5               # ZEV.NoticeTime
+notices = ["欢迎来到 GMS", "重构测试进行中"]
+packet_debug = false   # ZEV.封包显示
+packet_trace = false   # ZEV.调试输出封包
+anticheat_suckmob = true
+anticheat_fullscreen = true
+chat_filter = true
+
+[log]
+level = "info"
+format = "json"
+# file = "logs/gms.log"

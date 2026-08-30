@@ -1,0 +1,234 @@
+// Package login - P2.2 account/password login flow.
+//
+// This file ports the Java login chain:
+//   - handling/login/handler/CharLoginHandler.login -> handleLoginPassword
+//   - client/MapleClient.login / finishLogin / updateLoginState -> (*client).login
+//   - handling/login/LoginWorker.registerClient        -> registerClient
+//
+// Simplifications vs the Java original (documented, P2.5+ will revisit):
+//   - IP/MAC ban tables and the 登陆保护/队列/多开 config checks are skipped
+//     (they are per-distribution add-ons around the core loginok chain).
+//   - AutoRegister (账号注册开关) is P2.5; for now an unknown account is
+//     loginok=5 as in stock v079.
+
+package login
+
+import (
+	"context"
+	"fmt"
+	"net"
+	"strings"
+	"time"
+
+	"GMS/internal/database"
+	"GMS/internal/netw"
+	"GMS/internal/protocol"
+)
+
+// loginFailed reasons (Java MapleClient.login return codes / client LOGIN_STATUS ints).
+const (
+	loginOK          = 0 // success
+	loginBanned      = 3 // banned > 0 and not GM
+	loginWrongPw     = 4 // password mismatch
+	loginNoAccount   = 5 // no row for that name
+	loginAlreadyIn   = 7 // loggedin state > 0 (double login)
+)
+
+// accountStore is the DB surface the login flow needs (implemented by
+// *database.DB; faked in tests).
+type accountStore interface {
+	GetAccountByName(ctx context.Context, name string) (*database.Account, error)
+	GetAccountState(ctx context.Context, id int) (database.AccountState, error)
+	UpdateLoginState(ctx context.Context, id int, newstate int, sessionIP string) error
+	UpdatePasswordSHA1(ctx context.Context, id int, password string) error
+	UnbanAccount(ctx context.Context, id int) error
+	UpdateAccountMac(ctx context.Context, id int, macData string) error
+
+	// P2.4 character-side surface (Java MapleClient.loadCharacters /
+	// MapleCharacterUtil / MapleCharacter.saveNewCharToDB / deleteCharacter /
+	// getCharacterSlots / updateGender).
+	GetCharactersByAccount(ctx context.Context, accountID, world int) ([]database.Character, error)
+	GetCharacterIDByName(ctx context.Context, name string) (int, error)
+	InsertCharacter(ctx context.Context, c *database.Character) (int, error)
+	DeleteCharacterByID(ctx context.Context, id, accountID int) (int, error)
+	CharacterSlots(ctx context.Context, accID, world, def int) (int, error)
+	UpdateAccountGender(ctx context.Context, id int, gender int) error
+}
+
+// client is the per-connection login state (Java MapleClient subset).
+type client struct {
+	accID        int
+	accountName  string
+	mac          string
+	gm           bool
+	gender       int
+	loginAttempt int
+	// loggedIn mirrors Java MapleClient.loggedIn: set true by
+	// updateLoginState(LOGIN_LOGGEDIN); gates NeedsChecking opcodes
+	// (SERVERLIST/SERVERSTATUS/...).
+	loggedIn bool
+	// allowedChars is the Java MapleClient.allowedChar set: ids that may be
+	// selected/deleted (filled by loadCharacters, checked by login_Auth).
+	allowedChars map[int]bool
+	// world/channel are the selected world+channel (Java setWorld/setChannel).
+	world   int
+	channel int
+}
+
+// sessionIP extracts the pure IP from a RemoteAddr (Java getSessionIPAddress:
+// "/1.2.3.4:5555" -> "/1.2.3.4").
+func sessionIP(remote string) string {
+	host, _, err := net.SplitHostPort(remote)
+	if err != nil {
+		host = strings.TrimPrefix(remote, "/")
+	}
+	return host
+}
+
+// handleLoginPassword ports CharLoginHandler.login (RecvLOGIN_PASSWORD
+// 0x0001): body after the 2-byte opcode = MapleAsciiString login,
+// MapleAsciiString pwd, 6 raw machine-code bytes.
+func (h handler) handleLoginPassword(s *netw.Session, r *protocol.Reader) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	login := r.MapleAsciiString()
+	pwd := r.MapleAsciiString()
+	if r.Err != nil || login == "" {
+		h.srv.log.Warn("malformed LOGIN_PASSWORD", "remote", s.RemoteAddr)
+		s.Write(LoginFailedPacket(loginNoAccount))
+		return
+	}
+	macData := macFromBytes(r.Read(6)) // machine code, informational
+
+	c := &client{accountName: login, mac: macData}
+	s.State.Store(c)
+
+	loginok, acc, needUpgrade := h.srv.dbLogin(ctx, c, login, pwd)
+	c.accID, c.gm, c.gender = acc.ID, acc.GM > 0, acc.Gender
+
+	// CharLoginHandler: fail-count guard (>5 attempts stop answering).
+	c.loginAttempt++
+	if loginok != loginOK {
+		if c.loginAttempt > 5 {
+			h.srv.log.Warn("login fail-count exceeded", "login", login, "remote", s.RemoteAddr)
+			return
+		}
+		s.Write(LoginFailedPacket(loginok))
+		return
+	}
+
+	if needUpgrade {
+		// Java updatePasswordHashtosha1: upgrade legacy / salted hashes to
+		// plain SHA-1 after a successful login.
+		if err := h.srv.store.UpdatePasswordSHA1(ctx, acc.ID, hexSHA1(pwd)); err != nil {
+			h.srv.log.Error("password upgrade failed", "err", err, "accID", acc.ID)
+		}
+	}
+
+	// c.updateMacs(): persist the machine code (skip all-zero MACs, Java).
+	if macData != "" && macData != "00-00-00-00-00-00" {
+		if err := h.srv.store.UpdateAccountMac(ctx, acc.ID, macData); err != nil {
+			h.srv.log.Error("mac update failed", "err", err, "accID", acc.ID)
+		}
+	}
+
+	// LoginWorker.registerClient -> finishLogin: set loggedin=2 + SessionIP.
+	ip := sessionIP(s.RemoteAddr)
+	if err := h.srv.store.UpdateLoginState(ctx, acc.ID, database.LoginLoggedIn, ip); err != nil {
+		h.srv.log.Error("login state update failed", "err", err, "accID", acc.ID)
+	} else {
+		c.loggedIn = true // Java updateLoginState(LOGIN_LOGGEDIN): loggedIn = true
+	}
+
+	if c.gender == 10 { // Java getGenderNeeded for unset-gender accounts
+		h.srv.log.Info("login ok, gender needed", "login", login, "accID", acc.ID)
+		s.Write(GenderNeededPacket(login))
+		return
+	}
+	h.srv.log.Info("login ok", "login", login, "accID", acc.ID, "gm", c.gm)
+	s.Write(AuthSuccessPacket(acc.ID, byte(c.gender), c.gm, login))
+}
+
+// dbLogin ports MapleClient.login(name, pwd): the loginok chain.
+// Returns (loginok, account, upgradeToSHA1).
+func (srv *Server) dbLogin(ctx context.Context, c *client, login, pwd string) (int, *database.Account, bool) {
+	acc, err := srv.store.GetAccountByName(ctx, login)
+	if err != nil {
+		srv.log.Error("account lookup failed", "err", err, "login", login)
+		return loginNoAccount, &database.Account{}, false
+	}
+	if acc == nil {
+		return loginNoAccount, &database.Account{}, false
+	}
+
+	gm := acc.GM > 0
+
+	// banned handling: >0 and not GM -> 3; ==-1 auto-unban then continue.
+	if acc.Banned > 0 && !gm {
+		return loginBanned, acc, false
+	}
+	if acc.Banned == -1 {
+		if err := srv.store.UnbanAccount(ctx, acc.ID); err != nil {
+			srv.log.Error("unban failed", "err", err, "accID", acc.ID)
+		}
+	}
+
+	// Double-login: live loggedin state (transition states 1/6 time out
+	// after 20s like Java getLoginState).
+	state, err := srv.store.GetAccountState(ctx, acc.ID)
+	if err != nil {
+		srv.log.Error("state lookup failed", "err", err, "accID", acc.ID)
+		return loginWrongPw, acc, false
+	}
+	loggedin := state.LoggedIn
+	if loggedin == database.LoginServerTransit || loggedin == database.ChangeChannel {
+		if !state.LastLogin.Valid || !withinTransitionWindow(state.LastLogin.Time) {
+			loggedin = database.LoginNotLoggedIn
+		}
+	}
+	if loggedin > database.LoginNotLoggedIn {
+		// Java: on double login with matching sha1 password, unlockAcc().
+		// Go: report 7; the stale session cleanup arrives with the channel
+		// server (P4).
+		return loginAlreadyIn, acc, false
+	}
+
+	// Password chain (Java order): legacy $H$ -> salt==NULL sha1 ->
+	// superpw -> salted sha512.
+	if isLegacyPassword(acc.Password) && legacyCheckPassword(pwd, acc.Password) {
+		return loginOK, acc, true
+	}
+	if !acc.Salt.Valid && checkSHA1Hash(acc.Password, pwd) {
+		return loginOK, acc, false
+	}
+	if srv.cfg.SuperPassword && pwd != "" && pwd == srv.superpw {
+		return loginOK, acc, false
+	}
+	if acc.Salt.Valid && checkSaltedSHA512Hash(acc.Password, pwd, acc.Salt.String) {
+		return loginOK, acc, true
+	}
+	return loginWrongPw, acc, false
+}
+
+// withinTransitionWindow ports the Java 20s connecting-to-chanserver timeout
+// (lastlogin + 20000 < now -> treat as logged out).
+func withinTransitionWindow(last time.Time) bool {
+	if last.IsZero() {
+		return false
+	}
+	return time.Since(last) < 20*time.Second
+}
+
+// macFromBytes formats the 6 machine-code bytes Java-style:
+// "XX-XX-XX-XX-XX-XX" (uppercase, left-padded hex).
+func macFromBytes(b []byte) string {
+	if len(b) != 6 {
+		return ""
+	}
+	parts := make([]string, 6)
+	for i, v := range b {
+		parts[i] = fmt.Sprintf("%02X", v)
+	}
+	return strings.Join(parts, "-")
+}

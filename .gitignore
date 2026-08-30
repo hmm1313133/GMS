@@ -1,0 +1,16 @@
+# build artifacts
+bin/
+*.exe
+
+# runtime data (auto-provisioned sqlite dev backend)
+data/
+
+# IDE
+.idea/
+
+# CodeBuddy workspace data
+.codebuddy/
+
+# tool outputs
+tools/jadx_out/
+*.class
