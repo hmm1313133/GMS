@@ -246,6 +246,16 @@ var sqliteSchema = []string{
 	  charslots INTEGER NOT NULL DEFAULT 6,
 	  PRIMARY KEY (accid, worldid)
 	)`,
+	// ipbans / macbans: P2.5 ban lists (migrations/0001_base.sql:1822/1911),
+	// MySQL->SQLite translation. Empty by default = nobody is banned.
+	`CREATE TABLE IF NOT EXISTS ipbans (
+	  ipbanid INTEGER PRIMARY KEY AUTOINCREMENT,
+	  ip TEXT NOT NULL DEFAULT ''
+	)`,
+	`CREATE TABLE IF NOT EXISTS macbans (
+	  macbanid INTEGER PRIMARY KEY AUTOINCREMENT,
+	  mac TEXT NOT NULL
+	)`,
 }
 
 // Ping checks the pool with a bounded context (Java: Connection.isValid).

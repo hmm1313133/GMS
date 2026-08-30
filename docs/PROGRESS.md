@@ -4,17 +4,17 @@
 > 规则：完成打 `[x]` 并附日期/(提交号)；进行中在行尾标 🔄；新增任务追加编号不改旧号；范围变化记入文末"变更记录"。
 > **文件级追踪**：以 `docs/FILETRACK.md` 为准（533 个 Java 文件逐条标记 TODO/ACTV/DONE/MERG/SKIP），本文件只追踪阶段任务。
 
-最后更新：2026-08-30（P2.4 完成：CHARLIST/建角/删角/SET_GENDER 全链 + live 冒烟）
+最后更新：2026-08-30（P3.1+P3.2 完成：wz 数据层读取 + 全量 39,986 文件校验 0 失败；P0.6 客户端实连暂缓）
 
 ## 完成度汇总
 
 | 维度 | 进度 |
 |---|---|
-| Phase | 1 / 12（P1 完成；P0 剩 0.6；P2 进行中） |
-| 任务 | 14 / 76（P0.1-0.5 + P1.1-1.5 + P2.1 + P2.2 + P2.3 + P2.4） |
-| 文件级（FILETRACK） | DONE 21 / MERG 33 / ACTV+3 文件 |
+| Phase | 1 / 12（P1 完成；P0 剩 0.6；P2 代码完成待 P0.6 验收；P3 进行中） |
+| 任务 | 17 / 76（P0.1-0.5 + P1.1-1.5 + P2.1-2.5 + P3.1 + P3.2） |
+| 文件级（FILETRACK） | DONE 27 / MERG 44 / ACTV+3 文件 |
 | 脚本可用率（P7 起跟踪） | - |
-| 当前里程碑 | **M1：登录闭环（P0–P2）🔄** |
+| 当前里程碑 | **M1：登录闭环（P0–P2）🔄 / M2 数据层起步（P3）** |
 
 状态图例：⬜ 未开始 | 🔄 进行中 | ✅ 完成 | ⛔ 被阻塞(注明原因) | ❌ 不做(注明替代)
 
@@ -56,15 +56,40 @@
   - characters/character_slots DAO + SQLite 全列 DDL；`int` 列双方言引用
   - P2.4 简化（P3+ 补）：新角无 inventory/queststatus 入库（选角显示裸装）；创建上限用 charslots（原版 configvalues 创建角色数量行不在 dump）；2ndpassword 校验无 rand_r 包装
   - live 冒烟（SQLite）：-charlist 0/1 角色往返 + -hex CREATE_CHAR 建角回包/CHARLIST 回显全对
-- [ ] GMS-P2.5 自动注册 + 白/黑名单
+- [x] GMS-P2.5 自动注册 + 白/黑名单 ✅ 2026-08-30
+  - `internal/login/register.go`（新）：`bannedIP`（ipbans 前缀匹配）/ `bannedMac`（macbans 精确匹配 + Java 的零 MAC/长度≠17 豁免）/ `autoRegister`（账号不存在且未封禁时建号）/ `createAccount`（同机器码上限 ACCOUNTS_PER_MAC=100）
+  - `internal/login/auth.go`：CharLoginHandler.login 的分支顺序完全对齐——先算 ipBan/macBan，再进自动注册分支，最后 `loginok==0 && banned && !gm -> 3`（GM 豁免）；顺带修掉 DB 不可达时 nil store 崩溃（降级答 5）
+  - `internal/database/bans.go`（新）：`BannedIPs`/`IsBannedMac`/`CountAccountsByMac`/`InsertAutoRegisterAccount`；SQLite DDL 补 `ipbans`/`macbans`
+  - `internal/config`：`login.register_enabled`（账号注册开关，取反对齐 Java `<=0`）/ `login.accounts_per_mac`（<=0 不限）；`Server.SetServerName`（Java MapleParty.开服名字，弹窗标题）
+  - `tools/addaccount` 扩封禁表管理：`-bans`/`-banip`/`-banmac`/`-unbanip`/`-unbanmac`（P8 运营面板前唯一的封禁入口）
+  - 测试：login +12 wire 端到端（注册落地/二次登录 CHOOSE_GENDER/开关关闭/保留密码 disconnect|fixme/机器码上限/封禁跳过注册/IP 与 MAC 封禁改写为 3/GM 豁免/无库降级）+ ban 匹配单测 2 + config 默认 1 + database SQLite 封禁/注册集成 1
+  - live 冒烟（SQLite）：自动注册弹窗+reason 1 -> 落库（macs/SessionIP/gender=10）-> 二次登录 CHOOSE_GENDER；`-banip 127.0.0.` -> reason 3，解封 -> AuthSuccess；`-banmac` -> reason 3，解封 -> CHOOSE_GENDER
+  - 顺带修的坑：`config.Load` 现在把相对 sqlite DSN 按**配置文件所在目录**解析（原来按进程 cwd——从 `tools\` 起服务会在 `tools\data\` 建出第二个空库，本次实踩）；`tools/start-gms.cmd` 固定 `cd /d I:\GMS`
 - 冒烟：V079 客户端登录到角色列表并可建角
 
-## P3 wz 数据层 ⬜
+## P3 wz 数据层 🔄
 
-- [ ] GMS-P3.1 v079 wz reader
-- [ ] GMS-P3.2 wzdump + Java XML diff
-- [ ] GMS-P3.3 数据缓存（Map/String/Item/Skill/Mob/Reactor/Npc/Quest）
-- [ ] GMS-P3.4 （备选触发式）XML 兼容路线
+- [x] GMS-P3.1 v079 wz reader ✅ 2026-08-30
+  - `internal/wzs`（新包）：`type.go`（MapleDataType 全 17 值）/ `data.go`（Node + DirEntry 语义 + MapleDataTool 全族）/ `xml.go`（流式解析）/ `provider.go`（Provider + Root）
+  - 语义保真点：getChildByPath 的"仅首段 .."规则、getChildren 只收元素节点、canvas 的 PNGPath 推导、目录名去 `.xml` / 跳过 `*.img` 目录、空 value 容忍（wz 里有 `<int value=""/>`）
+  - 与 Java 的有意偏差：MapleDataTool 遇 nil/类型不符返回零值（Java 抛 NPE/CCE）；未知标签保留为 UNKNOWN_TYPE 节点（Java 返回 null 后 NPE）
+  - 数据源：`I:\GMS\wz`（K:\079MAX2服务端\wz 的 WzXML 解包副本，39,986 XML / 735 MB，已加入 .gitignore）
+  - 测试 10 个（类型映射/12 种标量/canvas+convex/路径与 `..`/DataTool 转换/provider 导航与缓存/错误路径/真实地图与 reactor UOL/解析报错/真实导出抽样 1187 文件）
+- [x] GMS-P3.2 wzdump 工具 ✅ 2026-08-30
+  - `tools/wzdump`：`-list`（16 wz 清单）/ `-tree`（目录树）/ `-dump`（节点树，含节点内路径）/ `-verify`（全量解析）
+  - **`-verify` 实测：16 个 wz、39,986 个 img、22,026,219 个节点全部解析成功，failed=0，耗时 3m12s**
+  - J3 的"与 Java XML diff"降级为不必要：Go 读的就是 Java 用的同一份 XML（见 MIGRATION_MAP §7 注 1）；真二进制 wz（J:\079MAX2客户端，3.9 GB）留作将来不依赖外部解包时的备选
+- [ ] GMS-P3.3 数据缓存（Map/String/Item/Skill/Mob/Reactor/Npc/Quest）🔄
+  - ✅ 已完成切片：**String.wz 名字表** `internal/wzs/names.go`
+    - `Names` 一次装载 6 张表：Item（Cash/Consume/Eqp/Etc/Ins/Pet，name+desc）、Map（mapName+streetName）、Mob、NPC、Skill，外加 `Etc.wz/ForbiddenName.img`（Java LoginInformationProvider 的违禁名子串匹配）
+    - 与 Java 的有意偏差：Java 按"计算出来的路径"查（SkillFactory 把 id 左补零到 7 位、MapleMapFactory 先由 mapid 算地区名），本服数据对不上（Skill.img 有 8 位键 10000018、Map.img 没有 Java 会查的 `china` 区），Go 改为按 id 建全量索引 —— 少一层字符串拼接，也救回了 Java 会漏掉的那批名字
+    - 兜底值沿用 Java：`NO-NAME`（物品/怪物）、`MISSINGNO`（NPC）、技能缺失返回空串（Java 返回 null）
+    - 缺图不致命：记入 `Names.Errors` 继续跑（Java 会抛 RuntimeException）
+  - ✅ 配置与接线：`config.WZ{path,load_names}`（`[wz]` 段，默认 `wz` / true，对应 Java `net.sf.odinms.wzpath`）、`cmd/gms` 启动期装载 + 计数日志；wz 缺失/损坏只降级不崩（与 DB 降级同款）
+  - 测试 2 个（testdata 固定装置全表断言 + 真实导出断言）+ config 2 个（默认值 / `[wz]` 段解码）
+  - **live 冒烟**：`bin/gms.exe` 日志 `wz root opened path=wz` → `wz names loaded items=48371 maps=4235 mobs=1833 npcs=3192 skills=527 forbidden=466`（0.2s）→ `login server listening :8484`；protocoltest 握手回归正常（hello version=79）
+  - 待做：Item（`Item.wz` + `Character.wz` 装备统计）、Skill、Mob、Npc、Reactor、Map（Map.wz 地图实例数据留给 P4.3）
+- [ ] GMS-P3.4 （备选触发式）XML 兼容路线 —— 不需要：Go 读的就是 Java 的 WzXML 解包（见 MIGRATION_MAP §7 注 1）；真二进制 reader 若将来要做，接口已可插拔
 - [ ] GMS-P3.5 wztosql 掉落表入库
 - 冒烟：16 wz 全读无错；代表图数据与 Java 版一致
 
@@ -163,3 +188,4 @@
 - 2026-08-27 会话中断，进度固化至 SESSION_STATE.md（断点A：login server_test.go 已写未跑）。
 - 2026-08-29 恢复现场：跑通 login 冒烟测试并修复三处——①getHello 在 Java 中是 client 属性未建立前写入，应走原始 15 字节（无帧头/不加密）；②Acceptor 补调 OnOpen；③测试 readN 精确读不吞包；protocoltest 同步修正。live 验证：`bin/gms.exe configs/gms.toml` + `tools/protocoltest.exe` 输出 hello version=79、PONG→PING opcode 0x0014。
 - 2026-08-29 P0.3/P0.6/P2.1 推进：修复 my.ini 路径并启动 K: MySQL 5.5.53，`mysqldump --no-data 079-max2` 生成 migrations/0001_base.sql（225 表，A/B/C=70/113/42）；新增 internal/database（go-sql-driver/mysql + sqlx）与 accounts DAO，GMS_TEST_DB_DSN 实连 079-max2 验证通过。
+- 2026-08-30 范围变更（P0.6 / J3）：①V079 客户端实连（P0.6）本轮**继续暂缓**，先推 P3 数据层；②wz 路线由"自研二进制 reader + 与 Java XML diff"改为**直读 WzXML 解包 XML**——实测 K:\079MAX2服务端\wz 的 16 个 *.wz 全是解包目录（39,986 XML / 735 MB），即 Java 服读的就是这份数据，Go 读同一份天然一致；解包已复制到 `I:\GMS\wz` 并加入 .gitignore。真二进制 wz（J:\079MAX2客户端\*.wz，约 3.9 GB）保留为将来"不依赖外部解包"时的备选，接口已按 provider.MapleData 抽象可插拔（详见 MIGRATION_MAP §7 注 1）。

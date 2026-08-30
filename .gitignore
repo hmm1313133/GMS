@@ -3,7 +3,10 @@ bin/
 *.exe
 
 # runtime data (auto-provisioned sqlite dev backend)
-data/
+/data/
+
+# wz export (734 MB / 39986 XML files copied from K:\079MAX2服务端\wz)
+/wz/
 
 # IDE
 .idea/

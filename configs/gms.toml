@@ -25,7 +25,11 @@ user_limit = 500
 [login]
 host = "0.0.0.0"
 port = 8484            # ZEV.LPort
-auto_register = true   # ZEV.自动注册
+auto_register = true   # ZEV.自动注册 / AutoRegister.autoRegister
+# 注册开关（Java Start.ConfigValuesMap["账号注册开关"] <= 0 为开启；configvalues 表不在 dump，改由本键控制）
+register_enabled = true
+# 同一机器码可注册的账号上限（Java AutoRegister.ACCOUNTS_PER_MAC = 100；<=0 不限）
+accounts_per_mac = 100
 super_password = false
 allow_duplicate_ip = true
 
@@ -41,10 +45,21 @@ cashshop_port = 8600
 #   driver = "mysql"
 #   dsn = "root:root@tcp(127.0.0.1:3306)/079-max2?charset=utf8mb4&parseTime=true&loc=Local"
 driver = "sqlite"
-dsn = "data/gms.db?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)"
+# 相对路径按「配置文件所在目录」解析（config.Load 自动处理），所以这里是仓库根的 data/；
+# 写成绝对路径或 file: URI 也不会被改写。
+dsn = "../data/gms.db?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)"
 max_open_conns = 8
 max_idle_conns = 4
 conn_max_lifetime_sec = 1800
+
+[wz]
+# wz 数据目录（Java: System.getProperty("net.sf.odinms.wzpath", "wz")，相对进程 cwd）。
+# 内容 = WzXML 解包（每个 *.wz 是一个目录，里面全是 *.img.xml），
+# 从 K:\079MAX2服务端\wz 复制到仓库根 wz/（735 MB，已 gitignore）。
+path = "wz"
+# 启动时预加载 String.wz 名字表（物品/地图/怪物/NPC/技能），
+# 对应 Java 各 Factory 静态初始化期读的那几张 img。
+load_names = true
 
 [game]
 server_message = "GMS Go 服务端测试中"   # ZEV.ServerMessage

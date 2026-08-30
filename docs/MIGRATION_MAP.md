@@ -23,8 +23,9 @@
 | Java 原件 | Go 目标 | 状态 | 备注 |
 |---|---|---|---|
 | handling/login/*（6 件 1115 行） | login/server.go | ✅ | P1 冒烟（握手/PING）；P2 补账密/选角 |
-| handling/login/handler/CharLoginHandler | login/auth.go+worlds.go+chars.go | 🔄 | P2.2 已迁 login()；P2.3 已迁 ServerList/ServerStatus；P2.4 已迁 Charlist/CheckCharName/CreateChar/DeleteChar/SetGender；P4 余 Character_With/WithoutSecondPassword |
-| handling/login/handler/AutoRegister | login/register.go | ⬜ | ZEV.自动注册 |
+| handling/login/handler/CharLoginHandler | login/auth.go+worlds.go+chars.go+register.go | 🔄 | P2.2 已迁 login()；P2.3 已迁 ServerList/ServerStatus；P2.4 已迁 Charlist/CheckCharName/CreateChar/DeleteChar/SetGender；P2.5 已迁自动注册分支 + IP/MAC 封禁门禁；P4 余 Character_With/WithoutSecondPassword |
+| handling/login/handler/AutoRegister | login/register.go | ✅ | P2.5：ZEV.自动注册 + createAccount（同机器码 ≤100）；IP/MAC 封禁见 client/MapleClient 行 |
+| client/MapleClient.hasBannedIP / isBannedMac | login/register.go + database/bans.go | ✅ | P2.5：ipbans 前缀匹配 / macbans 精确匹配（含零 MAC 与长度≠17 豁免）；表结构出自 migrations/0001_base.sql:1822/1911 |
 | client/LoginCrypto(+)Legacy | login/crypto.go | ✅ | SHA+盐，golden 对拍（含 2 个 Java quirk） |
 | gui.ZEVMS2 中 wzpath/启动装配段 | cmd/gms/main.go | ✅ | 只取装配语义 |
 | database/DatabaseConnection(.1) | database/db.go | ✅ | sqlx 池替代线程绑定连接 |
@@ -72,12 +73,20 @@
 
 | Java 原件 | Go 目标 | 状态 | 备注 |
 |---|---|---|---|
-| provider/WzXML/*（8 件 563 行） | wzs/ 接口定义 | ⬜ | Go 直读二进制 wz（J3） |
-| provider/MapleData* 接口族 | wzs/node.go | ⬜ | |
+| provider/WzXML/*（8 件 563 行） | wzs/type.go + xml.go + provider.go | ✅ | P3.1：读 WzXML 解包（读的是与 Java 同一份 XML，见注 1） |
+| provider/MapleData* 接口族 | wzs/data.go（Node/DirEntry/DataTool） | ✅ | P3.1：getChildByPath/getChildren/getData 语义保真 |
+| String.wz 名字表（Cash/Consume/Eqp/Etc/Ins/Pet/Map/Mob/Npc/Skill + Etc.wz ForbiddenName） | wzs/names.go Names | ✅ | P3.3 首片：按 id 建索引（Java 按计算路径查，本服 Skill.img 有 8 位键、Map.img 无 china 区） |
 | server/MapleItemInformationProvider | wzs/itemdata.go | ⬜ | 1459 行 |
 | server/life/MapleLifeFactory, maps/MapleMapFactory | wzs/mapfactory.go, life/factory.go | ⬜ | |
 | tools/wztosql/*（4 件 1311 行） | tools/wztosql/ | ⬜ | 掉落/道具入库 |
 | client/SkillFactory | wzs/skilldata.go | ⬜ | |
+
+> 注 1（2026-08-30 决策）：J3 原定"自研二进制 wz reader + 与 Java XML 输出 diff"。
+> 实测 K:\079MAX2服务端\wz 下的 16 个 *.wz 都是**目录**（HaRepacker/WzXML 解包，39,986 个 XML，735 MB），
+> 即 Java 服本身读的就是这份 XML，Go 读同一份数据即天然与 Java 一致，无需 diff。
+> 解包已复制到 `I:\GMS\wz`（.gitignore 忽略）。真二进制 wz 在 `J:\079MAX2客户端\*.wz`（v079 客户端，约 3.9 GB）、
+> `M:\MapleStory\萌萌Pro\*.wz`；若将来需要自给自足（不依赖外部解包），再按 J3 主线补二进制 reader，
+> 接口已按 provider.MapleData 抽象，可插拔。
 
 ## 8. 脚本系统（-> internal/script, tools/scriptlint）
 

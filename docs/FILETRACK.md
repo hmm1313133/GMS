@@ -8,10 +8,10 @@
 | metric | value |
 |---|---|
 | java files total | 533 |
-| to migrate (TODO+ACTV) | 426 |
-| done (DONE) | 21 |
-| merged (MERG) | 33 |
-| skipped (SKIP) | 51 |
+| to migrate (TODO+ACTV) | 408 |
+| done (DONE) | 27 |
+| merged (MERG) | 44 |
+| skipped (SKIP) | 52 |
 
 ## pkg (root) - 1 files, 41 lines -> - [SKIP]
 
@@ -496,8 +496,8 @@
 
 | java file | lines | status | go target | note |
 |---|---|---|---|---|
-| handling/login/handler/AutoRegister.java | 126 | TODO | internal/login/handler |  |
-| handling/login/handler/CharLoginHandler.java | 623 | ACTV | internal/login | P2.2 已迁 login()；P2.3 已迁 ServerListRequest/ServerStatusRequest；P2.4 已迁 CharlistRequest/CheckCharName/CreateChar/DeleteChar/SetGenderRequest；Character_With/WithoutSecondPassword P4 |
+| handling/login/handler/AutoRegister.java | 126 | DONE | internal/login/register.go | P2.5：自动注册 + createAccount（createAccount 的 email/birthday/qq 占位常量保留）；getAccountExists2/判断角色ID是否存在（DatabaseConnection1/游戏QQ号 表）不迁 |
+| handling/login/handler/CharLoginHandler.java | 623 | ACTV | internal/login | P2.2 已迁 login()；P2.3 已迁 ServerListRequest/ServerStatusRequest；P2.4 已迁 CharlistRequest/CheckCharName/CreateChar/DeleteChar/SetGenderRequest；P2.5 已迁自动注册分支 + hasBannedIP/isBannedMac 门禁（见 AutoRegister.java 行）；登陆保护/登陆队列/IP|机器码多开 走 config 键暂不迁；Character_With/WithoutSecondPassword P4 |
 
 ## pkg handling\netty - 4 files, 295 lines -> internal/netw [TODO]
 
@@ -550,32 +550,32 @@
 |---|---|---|---|---|
 | module/system/common/NetState.java | 40 | SKIP | - | old launcher leftover |
 
-## pkg provider - 9 files, 251 lines -> internal/wzs [TODO]
+## pkg provider - 9 files, 251 lines -> internal/wzs [MERG] (P3.1)
 
 | java file | lines | status | go target | note |
 |---|---|---|---|---|
-| provider/MapleCanvas.java | 10 | TODO | internal/wzs |  |
-| provider/MapleData.java | 17 | TODO | internal/wzs |  |
-| provider/MapleDataDirectoryEntry.java | 13 | TODO | internal/wzs |  |
-| provider/MapleDataEntity.java | 8 | TODO | internal/wzs |  |
-| provider/MapleDataEntry.java | 13 | TODO | internal/wzs |  |
-| provider/MapleDataFileEntry.java | 9 | TODO | internal/wzs |  |
-| provider/MapleDataProvider.java | 10 | TODO | internal/wzs |  |
-| provider/MapleDataProviderFactory.java | 26 | TODO | internal/wzs |  |
-| provider/MapleDataTool.java | 145 | TODO | internal/wzs |  |
+| provider/MapleCanvas.java | 10 | MERG | internal/wzs | into data.go Canvas (尺寸/PngPath，不解码) |
+| provider/MapleData.java | 17 | MERG | internal/wzs | into data.go Node |
+| provider/MapleDataDirectoryEntry.java | 13 | MERG | internal/wzs | into provider.go DirEntry |
+| provider/MapleDataEntity.java | 8 | MERG | internal/wzs | Node.Name/Parent |
+| provider/MapleDataEntry.java | 13 | MERG | internal/wzs | DirEntry 公共字段 |
+| provider/MapleDataFileEntry.java | 9 | MERG | internal/wzs | DirEntry 文件条目 |
+| provider/MapleDataProvider.java | 10 | DONE | internal/wzs | Provider（Data/Root） |
+| provider/MapleDataProviderFactory.java | 26 | DONE | internal/wzs | OpenRoot/Root.WZ（wzpath 语义） |
+| provider/MapleDataTool.java | 145 | DONE | internal/wzs | GetString/GetInt/GetIntConvert/… 全族 |
 
-## pkg provider\WzXML - 8 files, 563 lines -> internal/wzs [TODO]
+## pkg provider\WzXML - 8 files, 563 lines -> internal/wzs [MERG] (P3.1)
 
 | java file | lines | status | go target | note |
 |---|---|---|---|---|
-| provider/WzXML/FileStoredPngMapleCanvas.java | 46 | TODO | internal/wzs |  |
-| provider/WzXML/MapleDataType.java | 23 | TODO | internal/wzs |  |
-| provider/WzXML/PNGMapleCanvas.java | 126 | TODO | internal/wzs |  |
-| provider/WzXML/WZDirectoryEntry.java | 47 | TODO | internal/wzs |  |
-| provider/WzXML/WZEntry.java | 40 | TODO | internal/wzs |  |
-| provider/WzXML/WZFileEntry.java | 23 | TODO | internal/wzs |  |
-| provider/WzXML/XMLDomMapleData.java | 189 | TODO | internal/wzs |  |
-| provider/WzXML/XMLWZFile.java | 69 | TODO | internal/wzs |  |
+| provider/WzXML/FileStoredPngMapleCanvas.java | 46 | MERG | internal/wzs | Canvas.PNGPath（导出无 png，仅路径语义） |
+| provider/WzXML/MapleDataType.java | 23 | DONE | internal/wzs | type.go DataType |
+| provider/WzXML/PNGMapleCanvas.java | 126 | SKIP | - | PNG 解码：服务端不渲染 |
+| provider/WzXML/WZDirectoryEntry.java | 47 | MERG | internal/wzs | DirEntry（惰性列目录） |
+| provider/WzXML/WZEntry.java | 40 | MERG | internal/wzs | DirEntry 嵌入 |
+| provider/WzXML/WZFileEntry.java | 23 | MERG | internal/wzs | DirEntry 文件条目 |
+| provider/WzXML/XMLDomMapleData.java | 189 | MERG | internal/wzs | xml.go parseXML + Node 取值 |
+| provider/WzXML/XMLWZFile.java | 69 | DONE | internal/wzs | Provider（getData = <path>.xml） |
 
 ## pkg pvp - 2 files, 251 lines -> internal/custom/pvp [TODO]
 

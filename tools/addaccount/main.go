@@ -7,7 +7,16 @@
 //
 //	addaccount -config configs/gms.toml -name testgo -pass test123
 //	addaccount -config configs/gms.toml -show testgo
-//	addaccount -config configs/gms.toml -del testgo
+//	addaccount -config configs/gms.toml -remove testgo   (-del is an alias)
+//
+// P2.5 ban lists (ipbans / macbans), the only way to populate them until the
+// P8 ops panel exists:
+//
+//	addaccount -config configs/gms.toml -bans
+//	addaccount -config configs/gms.toml -banip 10.0.0.
+//	addaccount -config configs/gms.toml -banmac AA-BB-CC-DD-EE-FF
+//	addaccount -config configs/gms.toml -unbanip 10.0.0.
+//	addaccount -config configs/gms.toml -unbanmac AA-BB-CC-DD-EE-FF
 package main
 
 import (
@@ -30,7 +39,14 @@ func main() {
 	pass := flag.String("pass", "", "password (stored as SHA-1 hex, salt NULL)")
 	gender := flag.Int("gender", 1, "account gender (10 = CHOOSE_GENDER on login)")
 	show := flag.String("show", "", "dump account row state for this name")
-	del := flag.String("del", "", "delete this account")
+	del := flag.String("remove", "", "delete this account (-del is an alias)")
+	// P2.5 ban lists
+	listBans := flag.Bool("bans", false, "list ipbans and macbans entries")
+	banIP := flag.String("banip", "", "add an ipbans prefix rule (prefix match, e.g. 10.0.0.)")
+	banMac := flag.String("banmac", "", "add a macbans entry (exact 17-char machine code)")
+	unbanIP := flag.String("unbanip", "", "remove an ipbans rule")
+	unbanMac := flag.String("unbanmac", "", "remove a macbans entry")
+	flag.StringVar(del, "del", "", "alias of -remove")
 	flag.Parse()
 
 	cfg, err := config.Load(*cfgPath)
@@ -51,10 +67,21 @@ func main() {
 		showAccount(ctx, db, *show)
 	case *del != "":
 		delAccount(ctx, db, *del)
+	case *listBans:
+		listBanRules(ctx, db)
+	case *banIP != "":
+		execBan(ctx, db, "INSERT INTO ipbans (ip) VALUES (?)", *banIP, "ipban added: %q\n")
+	case *banMac != "":
+		execBan(ctx, db, "INSERT INTO macbans (mac) VALUES (?)", *banMac, "macban added: %q\n")
+	case *unbanIP != "":
+		execBan(ctx, db, "DELETE FROM ipbans WHERE ip = ?", *unbanIP, "ipban removed: %q\n")
+	case *unbanMac != "":
+		execBan(ctx, db, "DELETE FROM macbans WHERE mac = ?", *unbanMac, "macban removed: %q\n")
 	case *name != "" && *pass != "":
 		upsert(ctx, db, *name, *pass, *gender)
 	default:
-		fmt.Fprintln(os.Stderr, "need -name NAME -pass PASS, -show NAME, or -del NAME")
+		fmt.Fprintln(os.Stderr, "need -name NAME -pass PASS, -show NAME, -del NAME, "+
+			"or a ban-list action (-bans, -banip/-unbanip, -banmac/-unbanmac)")
 		os.Exit(2)
 	}
 }
@@ -115,6 +142,34 @@ func delAccount(ctx context.Context, db *database.DB, name string) {
 	}
 	n, _ := res.RowsAffected()
 	fmt.Printf("account %q deleted (%d rows)\n", name, n)
+}
+
+// listBanRules dumps the P2.5 ban lists (ipbans are prefix rules, macbans
+// exact 17-char machine codes).
+func listBanRules(ctx context.Context, db *database.DB) {
+	ips, err := db.BannedIPs(ctx)
+	if err != nil {
+		fail(err)
+	}
+	var macs []string
+	if err := db.SelectContext(ctx, &macs, "SELECT mac FROM macbans"); err != nil {
+		fail(err)
+	}
+	fmt.Printf("ipbans: %d\n", len(ips))
+	for _, ip := range ips {
+		fmt.Printf("  %s\n", ip)
+	}
+	fmt.Printf("macbans: %d\n", len(macs))
+	for _, m := range macs {
+		fmt.Printf("  %s\n", m)
+	}
+}
+
+func execBan(ctx context.Context, db *database.DB, q, arg, okFmt string) {
+	if _, err := db.ExecContext(ctx, q, arg); err != nil {
+		fail(err)
+	}
+	fmt.Printf(okFmt, arg)
 }
 
 func nullStr(s sql.NullString) string {

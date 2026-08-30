@@ -11,7 +11,9 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
+	"strings"
 
 	"github.com/BurntSushi/toml"
 )
@@ -22,8 +24,19 @@ type Root struct {
 	Login    Login    `toml:"login"`
 	Channel  Channel  `toml:"channel"`
 	Database Database `toml:"database"`
+	WZ       WZ       `toml:"wz"`
 	Game     Game     `toml:"game"`
 	Log      Log      `toml:"log"`
+}
+
+// WZ is the wz data source (Java: the net.sf.odinms.wzpath system property,
+// default "wz"). P3 reads the WzXML export (one directory per *.wz).
+type WZ struct {
+	// Path is the export root: a directory holding e.g. String.wz/, Map.wz/.
+	Path string `toml:"path"`
+	// LoadNames preloads the String.wz name tables (item/map/mob/npc/skill)
+	// at startup - the Java factories do the same in static initialisers.
+	LoadNames bool `toml:"load_names"`
 }
 
 // Server covers process-level settings (replaces ZEV.LPort / ZEV.Port / world count).
@@ -67,8 +80,17 @@ type Balloon struct {
 type Login struct {
 	Host string `toml:"host"` // listen host
 	Port int    `toml:"port"` // 8484 in original
-	// AutoRegister mirrors Java ZEV.自动注册 / handling.login.handler.AutoRegister.
+	// AutoRegister mirrors Java ZEV.自动注册 / AutoRegister.autoRegister
+	// (ServerConstants.getAutoReg): unknown accounts are created on first
+	// login attempt.
 	AutoRegister bool `toml:"auto_register"`
+	// RegisterEnabled mirrors Java Start.ConfigValuesMap["账号注册开关"] <= 0
+	// (inverted: the Java key is 0 = open, 1 = closed). When false the
+	// auto-register branch only tells the player registration is off.
+	RegisterEnabled bool `toml:"register_enabled"`
+	// AccountsPerMac caps how many accounts a single machine code may
+	// auto-register (Java AutoRegister.ACCOUNTS_PER_MAC = 100). <=0 = unlimited.
+	AccountsPerMac int `toml:"accounts_per_mac"`
 	// SuperPassword enables the fixed super-password login (Java: Super_password).
 	SuperPassword bool `toml:"super_password"`
 	// AllowDuplicateIP allows multiple sessions per IP.
@@ -139,9 +161,13 @@ func Defaults() Root {
 			UserLimit:    500,
 		},
 		Login: Login{
-			Host:           "0.0.0.0",
-			Port:           8484,
-			AutoRegister:   true,
+			Host:             "0.0.0.0",
+			Port:             8484,
+			AutoRegister:     true,
+			// Java: 账号注册开关 defaults to 0 (= open) when the configvalues
+			// row is absent, and ACCOUNTS_PER_MAC = 100.
+			RegisterEnabled: true,
+			AccountsPerMac:  100,
 			AllowDuplicateIP: true,
 		},
 		Channel: Channel{
@@ -149,6 +175,11 @@ func Defaults() Root {
 			Port:    7575,
 			Count:   5, // ZEV.Count=5
 			CashShopPort: 8600,
+		},
+		WZ: WZ{
+			// Java: System.getProperty("net.sf.odinms.wzpath", "wz")
+			Path:      "wz",
+			LoadNames: true,
 		},
 		Database: Database{
 			Driver:             "mysql",
@@ -185,10 +216,35 @@ func Load(path string) (Root, error) {
 	if _, err := toml.DecodeFile(path, &cfg); err != nil {
 		return cfg, fmt.Errorf("decode %q: %w", path, err)
 	}
+	cfg.Database = resolveSQLitePath(cfg.Database, filepath.Dir(path))
 	if err := cfg.Validate(); err != nil {
 		return cfg, err
 	}
 	return cfg, nil
+}
+
+// resolveSQLitePath rewrites a relative sqlite DSN to be relative to baseDir
+// (the directory of the config file that declared it). Paths inside a config
+// file conventionally resolve next to it, and this keeps the server, the CLI
+// tools and any launcher agreement on one database file no matter which
+// working directory the process was started from - starting from tools/ used
+// to silently create a second, empty database next to it. MySQL DSNs, absolute
+// paths and `file:` URIs are returned unchanged.
+func resolveSQLitePath(cfg Database, baseDir string) Database {
+	if cfg.Driver != "sqlite" || baseDir == "" {
+		return cfg
+	}
+	p := cfg.DSN
+	suffix := ""
+	if i := strings.IndexByte(p, '?'); i >= 0 {
+		p, suffix = p[:i], p[i:]
+	}
+	p = strings.TrimPrefix(p, "file:")
+	if p == "" || filepath.IsAbs(p) || filepath.VolumeName(p) != "" {
+		return cfg
+	}
+	cfg.DSN = filepath.Join(baseDir, p) + suffix
+	return cfg
 }
 
 // Validate sanity-checks ranges so startup fails fast (Java version started
@@ -218,6 +274,9 @@ func (r Root) Validate() error {
 	}
 	if r.Server.UserLimit < 0 {
 		return fmt.Errorf("server.user_limit negative: %d", r.Server.UserLimit)
+	}
+	if r.Login.AccountsPerMac < 0 {
+		return fmt.Errorf("login.accounts_per_mac negative: %d", r.Login.AccountsPerMac)
 	}
 	if r.Database.DSN == "" {
 		return fmt.Errorf("database.dsn must not be empty")

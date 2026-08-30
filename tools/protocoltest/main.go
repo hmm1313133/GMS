@@ -204,6 +204,8 @@ func decodeReply(b []byte) {
 		decodeServerList(b)
 	case 0x000A:
 		decodeCharList(b)
+	case 0x0041: // SERVERMESSAGE: P2.5 auto-register notices (serverNotice type 1)
+		decodeServerMessage(b)
 	case 0x0006:
 		if len(b) < 4 {
 			fmt.Println("       [SERVERSTATUS: truncated]")
@@ -213,6 +215,18 @@ func decodeReply(b []byte) {
 		name := map[int]string{0: "NORMAL", 1: "BUSY", 2: "FULL"}[st]
 		fmt.Printf("       [SERVERSTATUS: %d (%s)]\n", st, name)
 	}
+}
+
+// decodeServerMessage parses MaplePacketCreator.serverNotice(type, msg)
+// (opcode 0x0041): byte type + MapleAsciiString message.
+func decodeServerMessage(b []byte) {
+	if len(b) < 3 {
+		fmt.Println("       [SERVERMESSAGE: truncated]")
+		return
+	}
+	typ := b[2]
+	msg := protocol.NewReader(b[3:]).MapleAsciiString()
+	fmt.Printf("       [SERVERMESSAGE: type=%d %q]\n", typ, msg)
 }
 
 // decodeServerList parses one SERVERLIST entry (or the 0xFF end marker):

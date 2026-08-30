@@ -9,6 +9,7 @@ import (
 	"GMS/internal/config"
 	"GMS/internal/database"
 	"GMS/internal/login"
+	"GMS/internal/wzs"
 )
 
 // gms is the single-binary entry point (Java gui.ZEVMS -> cmd/gms).
@@ -31,6 +32,8 @@ func main() {
 	ls := login.New(cfg.Login, lg)
 	// P2.3: world/channel-list wiring (Java LoginServer statics).
 	ls.SetWorlds(login.WorldConfigFrom(cfg))
+	// P2.5: name shown in login popups (Java MapleParty.开服名字).
+	ls.SetServerName(cfg.Server.WorldName)
 
 	// P2.2: account DB for the login flow. When the DB is unreachable we
 	// still serve the P1 smoke path (hello/PING) and LOGIN_PASSWORD answers
@@ -42,6 +45,32 @@ func main() {
 		defer db.Close()
 		ls.SetStore(db)
 		lg.Info("database connected")
+	}
+
+	// P3.3: wz data (Java net.sf.odinms.wzpath). A missing/partial export is
+	// degraded, not fatal - nothing in the login path needs it yet.
+	wzRoot, err := wzs.OpenRoot(cfg.WZ.Path)
+	if err != nil {
+		lg.Warn("wz data unavailable", "path", cfg.WZ.Path, "err", err)
+	} else {
+		lg.Info("wz root opened", "path", cfg.WZ.Path)
+		if cfg.WZ.LoadNames {
+			names, err := wzs.LoadNames(wzRoot)
+			if err != nil {
+				lg.Warn("wz name tables unavailable", "err", err)
+			} else {
+				for _, e := range names.Errors {
+					lg.Warn("wz name table", "err", e)
+				}
+				lg.Info("wz names loaded",
+					"items", names.Counts.Items,
+					"maps", names.Counts.Maps,
+					"mobs", names.Counts.Mobs,
+					"npcs", names.Counts.NPCs,
+					"skills", names.Counts.Skills,
+					"forbidden", names.Counts.Forbidden)
+			}
+		}
 	}
 
 	if err := ls.Start(); err != nil {

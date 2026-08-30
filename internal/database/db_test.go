@@ -140,3 +140,78 @@ func TestSQLiteAccountChain(t *testing.T) {
 		t.Fatalf("banned = %d, want 0 after unban", a3.Banned)
 	}
 }
+
+// TestSQLiteBanAndAutoRegister exercises the P2.5 ban tables and the
+// auto-register INSERT on the auto-provisioned SQLite backend (ipbans /
+// macbans are created by Open, and empty = nobody is banned).
+func TestSQLiteBanAndAutoRegister(t *testing.T) {
+	dir := t.TempDir()
+	db, err := Open(config.Database{
+		Driver:             "sqlite",
+		DSN:                filepath.Join(dir, "bans.db"),
+		MaxOpenConns:       2,
+		MaxIdleConns:       1,
+		ConnMaxLifetimeSec: 60,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// fresh DB: no bans at all
+	ips, err := db.BannedIPs(ctx)
+	if err != nil || len(ips) != 0 {
+		t.Fatalf("BannedIPs on a fresh db = %v, %v", ips, err)
+	}
+	if yes, err := db.IsBannedMac(ctx, "11-22-33-44-55-66"); err != nil || yes {
+		t.Fatalf("IsBannedMac on a fresh db = %v, %v", yes, err)
+	}
+
+	if _, err := db.ExecContext(ctx, "INSERT INTO ipbans (ip) VALUES ('10.0.0.'), ('192.168.0.7')"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, "INSERT INTO macbans (mac) VALUES ('AA-BB-CC-DD-EE-FF')"); err != nil {
+		t.Fatal(err)
+	}
+	ips, err = db.BannedIPs(ctx)
+	if err != nil || len(ips) != 2 {
+		t.Fatalf("BannedIPs = %v, %v", ips, err)
+	}
+	if yes, err := db.IsBannedMac(ctx, "AA-BB-CC-DD-EE-FF"); err != nil || !yes {
+		t.Fatalf("IsBannedMac(AA-BB-CC-DD-EE-FF) = %v, %v", yes, err)
+	}
+	if yes, err := db.IsBannedMac(ctx, "11-22-33-44-55-66"); err != nil || yes {
+		t.Fatalf("IsBannedMac(unlisted) = %v, %v", yes, err)
+	}
+
+	// auto-register: insert + the per-mac counter that gates it
+	if err := db.InsertAutoRegisterAccount(ctx, "autoreg", sha1hex("pw123"), "127.0.0.1", "11-22-33-44-55-66"); err != nil {
+		t.Fatal(err)
+	}
+	n, err := db.CountAccountsByMac(ctx, "11-22-33-44-55-66")
+	if err != nil || n != 1 {
+		t.Fatalf("CountAccountsByMac = %d, %v", n, err)
+	}
+	if n, err := db.CountAccountsByMac(ctx, "FF-FF-FF-FF-FF-FF"); err != nil || n != 0 {
+		t.Fatalf("CountAccountsByMac(other) = %d, %v", n, err)
+	}
+	acc, err := db.GetAccountByName(ctx, "autoreg")
+	if err != nil || acc == nil {
+		t.Fatalf("GetAccountByName(autoreg) = %v, %v", acc, err)
+	}
+	if acc.Password != sha1hex("pw123") || acc.Salt.Valid {
+		t.Fatalf("auto-registered password = %q, salt = %+v (want plain sha1 + NULL salt)", acc.Password, acc.Salt)
+	}
+	if acc.Gender != 10 {
+		t.Fatalf("gender = %d, want 10 (accounts DEFAULT -> CHOOSE_GENDER on first login)", acc.Gender)
+	}
+	if acc.SessionIP.String != "127.0.0.1" || acc.Macs.String != "11-22-33-44-55-66" {
+		t.Fatalf("SessionIP = %+v macs = %+v", acc.SessionIP, acc.Macs)
+	}
+	if acc.Email.String != AutoRegEmail {
+		t.Fatalf("email = %q, want the Java placeholder %q", acc.Email.String, AutoRegEmail)
+	}
+}

@@ -33,6 +33,9 @@ type Server struct {
 	// superpw is the fixed super password (Java ServerConstants.superpw,
 	// default empty = disabled).
 	superpw string
+	// serverName is the display name used in login popups
+	// (Java MapleParty.开服名字, mirrored by LoginServer.serverName).
+	serverName string
 	// worlds is the world/channel-list state (P2.3, Java LoginServer statics).
 	worldMu sync.RWMutex
 	worlds  worldSet
@@ -54,6 +57,10 @@ func (s *Server) SetStore(store accountStore) { s.store = store }
 
 // SetSuperPassword sets the fixed super password (Java Super_password).
 func (s *Server) SetSuperPassword(pw string) { s.superpw = pw }
+
+// SetServerName sets the display name used in login popups (P2.5
+// auto-register notices; Java MapleParty.开服名字 / LoginServer.serverName).
+func (s *Server) SetServerName(name string) { s.serverName = name }
 
 // Start begins listening. Blocks callers only on error; serving is async.
 func (s *Server) Start() error {

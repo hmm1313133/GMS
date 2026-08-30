@@ -30,6 +30,11 @@ type fakeStore struct {
 	characters []database.Character
 	slots     int
 	nextCharID int
+	// P2.5 ban lists + auto-registration records.
+	ipBans    []string
+	macBans   map[string]bool
+	nextAccID int
+	registered []database.Account // accounts created by InsertAutoRegisterAccount
 }
 
 func newFakeStore() *fakeStore {
@@ -38,6 +43,8 @@ func newFakeStore() *fakeStore {
 		states:    map[int]database.AccountState{},
 		updates:   map[string]string{},
 		slots:     6,
+		macBans:   map[string]bool{},
+		nextAccID: 100,
 	}
 }
 
@@ -121,15 +128,67 @@ func (f *fakeStore) UpdateAccountGender(ctx context.Context, id int, gender int)
 	return nil
 }
 
+// ---- P2.5 ban list / auto-registration surface ----
+
+func (f *fakeStore) AccountExists(ctx context.Context, name string) (bool, error) {
+	_, ok := f.accounts[name]
+	return ok, nil
+}
+
+func (f *fakeStore) BannedIPs(ctx context.Context) ([]string, error) {
+	return f.ipBans, nil
+}
+
+func (f *fakeStore) IsBannedMac(ctx context.Context, mac string) (bool, error) {
+	return f.macBans[mac], nil
+}
+
+func (f *fakeStore) CountAccountsByMac(ctx context.Context, mac string) (int, error) {
+	n := 0
+	for _, a := range f.accounts {
+		if a.Macs.Valid && a.Macs.String == mac {
+			n++
+		}
+	}
+	return n, nil
+}
+
+func (f *fakeStore) InsertAutoRegisterAccount(ctx context.Context, name, passwordSHA1, sessionIP, mac string) error {
+	f.nextAccID++
+	a := database.Account{
+		ID:        f.nextAccID,
+		Name:      name,
+		Password:  passwordSHA1,
+		Gender:    10, // accounts.gender DEFAULT -> next login asks for gender
+		Macs:      sql.NullString{String: mac, Valid: true},
+		SessionIP: sql.NullString{String: sessionIP, Valid: true},
+	}
+	f.accounts[name] = &a
+	f.states[a.ID] = database.AccountState{LoggedIn: 0}
+	f.registered = append(f.registered, a)
+	return nil
+}
+
 // loginFlow performs the raw-hello handshake, sends one LOGIN_PASSWORD
 // packet (login, pwd, 6-byte machine code), and returns the first decrypted
 // reply body (LOGIN_STATUS or CHOOSE_GENDER).
 func loginFlow(t *testing.T, store accountStore, login, pwd string) []byte {
 	t.Helper()
+	// AutoRegister off: these tests target the login chain, not P2.5.
+	return loginFlowN(t, store, config.Login{Host: "127.0.0.1", Port: 0}, login, pwd, 1)[0]
+}
+
+// loginFlowN is the parameterized form of loginFlow: the caller supplies the
+// login-server config (P2.5 auto-register switches + ban lists) and how many
+// reply frames to read (the auto-register branch answers 2 packets:
+// SERVERMESSAGE popup + LOGIN_STATUS).
+func loginFlowN(t *testing.T, store accountStore, cfg config.Login, login, pwd string, n int) [][]byte {
+	t.Helper()
 
 	lg := slog.New(slog.NewTextHandler(&discardWriter{}, nil))
-	srv := New(config.Login{Host: "127.0.0.1", Port: 0}, lg)
+	srv := New(cfg, lg)
 	srv.SetStore(store)
+	srv.SetServerName("GMS")
 	if err := srv.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -157,17 +216,55 @@ func loginFlow(t *testing.T, store accountStore, login, pwd string) []byte {
 	w.Write([]byte{0x11, 0x22, 0x33, 0x44, 0x55, 0x66})
 	sendFrame(t, conn, cSend, w.Bytes())
 
-	// 3. read one encrypted reply frame and decrypt
-	conn.SetReadDeadline(time.Now().Add(3 * time.Second))
-	hdr := readN(t, conn, 4)
-	v := uint32(hdr[0])<<24 | uint32(hdr[1])<<16 | uint32(hdr[2])<<8 | uint32(hdr[3])
-	l := v>>16 ^ v&0xFFFF
-	n := int(l<<8&0xFF00 | l>>8)
-	reply := readN(t, conn, n)
+	// 3. read n encrypted reply frames and decrypt
 	cRecv := crypto.NewAESOFB(sendIV, -80)
-	cRecv.Crypt(reply)
-	crypto.ShandaDecrypt(reply)
-	return reply
+	out := make([][]byte, 0, n)
+	for i := 0; i < n; i++ {
+		conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+		hdr := readN(t, conn, 4)
+		v := uint32(hdr[0])<<24 | uint32(hdr[1])<<16 | uint32(hdr[2])<<8 | uint32(hdr[3])
+		l := v>>16 ^ v&0xFFFF
+		m := int(l<<8&0xFF00 | l>>8)
+		reply := readN(t, conn, m)
+		cRecv.Crypt(reply)
+		crypto.ShandaDecrypt(reply)
+		out = append(out, reply)
+	}
+	return out
+}
+
+// opOf returns the little-endian send opcode of a decrypted reply body.
+func opOf(b []byte) uint16 {
+	if len(b) < 2 {
+		return 0xFFFF
+	}
+	return uint16(b[0]) | uint16(b[1])<<8
+}
+
+// noticeText extracts the message of a SERVERMESSAGE type-1 popup
+// (Java MaplePacketCreator.serverNotice(1, msg)).
+func noticeText(t *testing.T, b []byte) string {
+	t.Helper()
+	if opOf(b) != uint16(protocol.SendSERVERMESSAGE) {
+		t.Fatalf("opcode = 0x%04X, want SERVERMESSAGE (0x%04X)", opOf(b), uint16(protocol.SendSERVERMESSAGE))
+	}
+	if len(b) < 3 || b[2] != 1 {
+		t.Fatalf("serverNotice type = %v, want 1", b[2:3])
+	}
+	r := protocol.NewReader(b[3:])
+	return r.MapleAsciiString()
+}
+
+// failedReason extracts the reason int of a LOGIN_STATUS / getLoginFailed reply.
+func failedReason(t *testing.T, b []byte) int {
+	t.Helper()
+	if opOf(b) != uint16(protocol.SendLOGIN_STATUS) {
+		t.Fatalf("opcode = 0x%04X, want LOGIN_STATUS (0x%04X)", opOf(b), uint16(protocol.SendLOGIN_STATUS))
+	}
+	if len(b) < 7 {
+		t.Fatalf("LOGIN_STATUS truncated: % X", b)
+	}
+	return int(b[2])
 }
 
 // golden constants (testdata/golden_login.txt, produced from the original jar).

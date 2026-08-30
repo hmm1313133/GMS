@@ -24,6 +24,9 @@ type Account struct {
 	Gender         int            `db:"gender"`
 	SessionIP      sql.NullString `db:"SessionIP"`
 	Macs           sql.NullString `db:"macs"`
+	// Email is only written by auto-registration (P2.5 AutoRegister: the
+	// distribution inserts a placeholder address); read for schema fidelity.
+	Email          sql.NullString `db:"email"`
 }
 
 // Login states (Java MapleClient constants, column `loggedin`).
@@ -43,7 +46,7 @@ func (db *DB) GetAccountByName(ctx context.Context, name string) (*Account, erro
 	// `2ndpassword` backticked: SQLite identifiers may not start with a digit
 	// and MySQL natively accepts backticks - one query serves both drivers.
 	q := "SELECT id, name, password, salt, `2ndpassword`, salt2, loggedin, " +
-		"banned, banreason, gm, gender, SessionIP, macs " +
+		"banned, banreason, gm, gender, SessionIP, macs, email " +
 		"FROM accounts WHERE name = ?"
 	if err := db.GetContext(ctx, &a, q, name); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {

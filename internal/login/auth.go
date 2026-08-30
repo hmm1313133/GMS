@@ -4,12 +4,14 @@
 //   - handling/login/handler/CharLoginHandler.login -> handleLoginPassword
 //   - client/MapleClient.login / finishLogin / updateLoginState -> (*client).login
 //   - handling/login/LoginWorker.registerClient        -> registerClient
+//   - handling/login/handler/AutoRegister              -> (P2.5) register.go
+//   - client/MapleClient.hasBannedIP / isBannedMac     -> (P2.5) register.go
 //
-// Simplifications vs the Java original (documented, P2.5+ will revisit):
-//   - IP/MAC ban tables and the 登陆保护/队列/多开 config checks are skipped
-//     (they are per-distribution add-ons around the core loginok chain).
-//   - AutoRegister (账号注册开关) is P2.5; for now an unknown account is
-//     loginok=5 as in stock v079.
+// Simplifications vs the Java original (documented):
+//   - The 登陆保护/队列/多开 (login guard / queue / multi-client) config checks
+//     are skipped (they are per-distribution add-ons around the core loginok
+//     chain, driven by the `configvalues` table which is absent from the
+//     079-max2 dump; PLAN classifies them SKIP or P7).
 
 package login
 
@@ -53,6 +55,14 @@ type accountStore interface {
 	DeleteCharacterByID(ctx context.Context, id, accountID int) (int, error)
 	CharacterSlots(ctx context.Context, accID, world, def int) (int, error)
 	UpdateAccountGender(ctx context.Context, id int, gender int) error
+
+	// P2.5 ban lists + auto-registration (MapleClient.hasBannedIP /
+	// isBannedMac + AutoRegister.createAccount).
+	AccountExists(ctx context.Context, name string) (bool, error)
+	BannedIPs(ctx context.Context) ([]string, error)
+	IsBannedMac(ctx context.Context, mac string) (bool, error)
+	CountAccountsByMac(ctx context.Context, mac string) (int, error)
+	InsertAutoRegisterAccount(ctx context.Context, name, passwordSHA1, sessionIP, mac string) error
 }
 
 // client is the per-connection login state (Java MapleClient subset).
@@ -104,8 +114,40 @@ func (h handler) handleLoginPassword(s *netw.Session, r *protocol.Reader) {
 	c := &client{accountName: login, mac: macData}
 	s.State.Store(c)
 
+	if h.srv.store == nil {
+		// Degraded mode (cmd/gms: DB unreachable at startup): answer the
+		// stock "no such account" instead of dereferencing a nil store.
+		h.srv.log.Warn("login without database", "login", login)
+		s.Write(LoginFailedPacket(loginNoAccount))
+		return
+	}
+
+	// CharLoginHandler.login: the IP/MAC ban checks run before the login
+	// chain and before auto-registration.
+	ipBan := h.srv.bannedIP(ctx, s.RemoteAddr)
+	macBan := h.srv.bannedMac(ctx, macData)
+	banned := ipBan || macBan
+
+	// AutoRegister branch: unknown account + not banned -> register instead
+	// of authenticating (Java AutoRegister.autoRegister / 账号注册开关).
+	if h.srv.cfg.AutoRegister && !banned {
+		exists, err := h.srv.store.AccountExists(ctx, login)
+		if err != nil {
+			h.srv.log.Error("account exists check failed", "err", err, "login", login)
+		} else if !exists {
+			h.srv.autoRegister(s, login, pwd, macData, s.RemoteAddr)
+			return
+		}
+	}
+
 	loginok, acc, needUpgrade := h.srv.dbLogin(ctx, c, login, pwd)
 	c.accID, c.gm, c.gender = acc.ID, acc.GM > 0, acc.Gender
+
+	// Java: if (loginok == 0 && (ipBan || macBan) && !c.isGm()) loginok = 3
+	// (a banned machine may still hold valid credentials).
+	if loginok == loginOK && banned && !c.gm {
+		loginok = loginBanned
+	}
 
 	// CharLoginHandler: fail-count guard (>5 attempts stop answering).
 	c.loginAttempt++
@@ -127,7 +169,7 @@ func (h handler) handleLoginPassword(s *netw.Session, r *protocol.Reader) {
 	}
 
 	// c.updateMacs(): persist the machine code (skip all-zero MACs, Java).
-	if macData != "" && macData != "00-00-00-00-00-00" {
+	if macData != "" && macData != zeroMAC {
 		if err := h.srv.store.UpdateAccountMac(ctx, acc.ID, macData); err != nil {
 			h.srv.log.Error("mac update failed", "err", err, "accID", acc.ID)
 		}
