@@ -26,7 +26,7 @@ go test  ./...                                   ✅ 全绿
 - **live 验证全过（GORM 后）**：MySQL 只读冒烟（账号/角色真表/掉落 900/14243/16）+ SQLite 完整握手（auto-register → CHOOSE_GENDER → SERVERLIST → SERVERSTATUS → CHARLIST）。
 - ✅ **`go build ./...`（全包）恢复全绿**：本会话把 pre-refactor 残留改名隔离（`main.go`→`_legacy_main.go`、`handing`→`_handing`、`client`→`_client`；下划线前缀是 Go 工具链官方忽略机制，**文件内容原封未动、可随时改回**，比原计划的 cleanup-oldlayout.ps1 删除方案更保守）。`go mod tidy` 随之首次跑通，gnet/zap/properties/maplelib 等垃圾依赖从 go.mod 清除。
 
-### 断点 O 会话（2026-09-12，P4.3b 地图实例数据 Map.wz）
+### 断点 O 会话（2026-09-12，P4.3b 地图实例数据 Map.wz；提交 fbc1bf9）
 
 1. **范围**：PLAN 的 `GMS-P4.3b`「地图实例数据（Map.wz `info`/`life`/`foothold`/`portal` = Java `MapleMapFactory`）」。**只做数据 + 查询层**：不做出图/传送行为、不生成怪物。
 2. **`internal/mapp` 新 4 文件**：
@@ -50,6 +50,7 @@ go test  ./...                                   ✅ 全绿
 12. **live 冒烟全过**（SQLite + 真实 `wz/`）：启动日志 `map data wired wz=Map.wz`；建角 `43333`(id19) 直连 7575 → `WARP_TO_MAP` + `SPAWN_PLAYER` 正常、**全程无 WARN/ERROR**（即 map 0 的 info/portal/foothold 解析干净）。测完 `-unlock` → 删角 0x7FFE → `-remove` 删号 → 停进程。
 13. **仍未消费的数据（下一轮入口）**：`Portal`/`ReturnMapID`/`ForcedReturnID` 还没接进登录出生点（`WARP_TO_MAP` 的 spawn 坐标仍是 (0,0) —— P4.3 的既有偏差）；`CHANGE_MAP`(0x21)/`CHANGE_MAP_SPECIAL`(0x61) 的 handler **未写**（换图仍不可用，opcode 常量在 `protocol/opcodes_gen.go` 已有）；`LifeSpawn` 等 P6 生成；`FieldLimit` 等各 handler。
 14. **范围外（确认未动）**：reactor、`MapleNodes`/platform/area、`ladderRope`（Java 全树无消费方）、地图特效（`MapleMapEffect` 根本不在加载路径里）、`back`/`tile`/`obj`/`miniMap`/`ToolTip`/`seat`/`pvp`、区域 BOSS（`addAreaBossSpawn`，15 个硬编码 + 缺 `ConfigValuesMap`）、`CreateInstanceMap`、时钟/船、`HealMap`/`DeStorymaps`、DB 驱动 `customLife`、String.wz 地图名（P3.3 已装）、portal 的 delay/hideTooltip/onlyOnce/horizontalImpact/image 与 foothold 的 forbidFallDown/force（Java 也不读）。
+15. **提交与验证**：`fbc1bf9`；提交后用独立 worktree（`git worktree add --detach <tmp> HEAD`）实测 `go build ./...` + `go test ./internal/mapp ./internal/channel` 全绿。**这是本项目的推荐交付动作**（P4.5 那次就是靠它发现"提交树编译不过"）。
 
 ### 断点 N 会话（2026-09-12，P4.5 聊天 + P4.5b configvalues 开关层；提交 c75f0a4）
 
