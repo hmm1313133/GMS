@@ -142,8 +142,6 @@ type Game struct {
 	// Anticheat toggles (Java: abc/吸怪检测, abc/检测全屏 etc.).
 	AnticheatSuckMob     bool `toml:"anticheat_suckmob"`
 	AnticheatFullscreen  bool `toml:"anticheat_fullscreen"`
-	// ChatFilter enables keyword filtering (Java: abc/关键字屏蔽 / 屏幕关键字).
-	ChatFilter bool `toml:"chat_filter"`
 }
 
 // Log configures slog JSON output (replaces FilePrinter/FileoutputUtil).
@@ -204,7 +202,6 @@ func Defaults() Root {
 			PacketTrace: false,
 			AnticheatSuckMob:    true,
 			AnticheatFullscreen: true,
-			ChatFilter:          true,
 		},
 		Log: Log{Level: "info", Format: "json"},
 	}

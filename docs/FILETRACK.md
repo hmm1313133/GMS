@@ -8,10 +8,10 @@
 | metric | value |
 |---|---|
 | java files total | 533 |
-| to migrate (TODO+ACTV) | 403 |
-| done (DONE) | 30 |
+| to migrate (TODO+ACTV) | 400 |
+| done (DONE) | 31 |
 | merged (MERG) | 48 |
-| skipped (SKIP) | 52 |
+| skipped (SKIP) | 54 |
 
 ## pkg (root) - 1 files, 41 lines -> - [SKIP]
 
@@ -43,10 +43,10 @@
 | abc/OtherSettings2.java | 61 | TODO | internal/anticheat+config | split: detect/config/util |
 | abc/PNPC.java | 48 | TODO | internal/anticheat+config | split: detect/config/util |
 | abc/访问地区.java | 33 | TODO | internal/anticheat+config | split: detect/config/util |
-| abc/关键字屏蔽.java | 53 | TODO | internal/anticheat+config | split: detect/config/util |
+| abc/关键字屏蔽.java | 53 | SKIP | - | **死代码，不迁**：079MAX2.jar 全 2441 个 class 无任何引用（类名只在自己的 this_class 里出现）、`加载文件\关键字屏蔽.ini` 在部署中不存在、原版聊天无关键字过滤。见 PROGRESS GMS-P4.5 查证段 |
 | abc/检测全屏.java | 68 | TODO | internal/anticheat+config | split: detect/config/util |
 | abc/拍卖行限制.java | 48 | TODO | internal/anticheat+config | split: detect/config/util |
-| abc/屏幕关键字.java | 48 | TODO | internal/anticheat+config | split: detect/config/util |
+| abc/屏幕关键字.java | 48 | SKIP | - | **死代码，不迁**：同上（jar 无引用；ini 路径写成 `加载文件\加载文件\屏幕关键字.ini`，部署里没有这个嵌套目录）|
 | abc/任务修复.java | 53 | TODO | internal/anticheat+config | split: detect/config/util |
 | abc/商城检测文件.java | 53 | TODO | internal/anticheat+config | split: detect/config/util |
 | abc/物品丢弃检测.java | 53 | TODO | internal/anticheat+config | split: detect/config/util |
@@ -458,7 +458,7 @@
 | handling/channel/handler/BBSHandler.java | 124 | TODO | internal/channel/handler |  |
 | handling/channel/handler/BeanGame.java | 108 | TODO | internal/channel/handler |  |
 | handling/channel/handler/BuddyListHandler.java | 198 | TODO | internal/channel/handler |  |
-| handling/channel/handler/ChatHandler.java | 420 | TODO | internal/channel/handler |  |
+| handling/channel/handler/ChatHandler.java | 420 | DONE | internal/channel | P4.5：`GeneralChat`（长度上限按 **UTF-16 码元** `>=80` 且 GM 豁免 → `broadcastMessage(pkt, position)` 的 **Point 重载带视野过滤**、source=null 故说话人自收；`whiteBG=isGM()`、`show`=包尾字节回写）与 `Whisper_Find`（mode 5/68 找人 → 本频道 `getFindReplyWithMap` / 跨频道 `getFindReply`，GM 隐身规则；mode 6 → `getWhisper`+`getWhisperReply`，非 GM 私聊 GM reply 归 0；注册表陈旧 `player==null` 时 Java 直接 break 不回包）已迁入 `channel/chat.go`；`Others`/`Messenger`/`MAPLETV` 属 P8；`玩家聊天开关`/`游戏找人开关` 由 P4.5b 转正；跳过 `CommandProcessor`（P7）、`getCanTalk()` 禁言、`checkMsg()`（空转）、`聊天记录开关` 文件日志（运营侧待做）；**未被调用的 `abc/关键字屏蔽`/`屏幕关键字` 是死代码，不迁** |
 | handling/channel/handler/cms.java | 8 | TODO | internal/channel/handler |  |
 | handling/channel/handler/DamageParse.java | 1286 | TODO | internal/channel/handler |  |
 | handling/channel/handler/DueyHandler.java | 284 | TODO | internal/channel/handler |  |
@@ -869,7 +869,7 @@
 | server/maps/MapleFootholdTree.java | 175 | TODO | internal/mapp |  |
 | server/maps/MapleGenericPortal.java | 119 | TODO | internal/mapp |  |
 | server/maps/MapleLove.java | 54 | TODO | internal/mapp |  |
-| server/maps/MapleMap.java | 4359 | ACTV | internal/mapp | P4.2 玩家集合（addPlayer/removePlayer 的 mapobjects 部分 + MapFactory 惰性建图）；P4.3 spawn/despawn 广播（addPlayer → 对同图其他人 spawnPlayerMapobject + 新人对每个老玩家 + 自身；removePlayer → 广播 removePlayerFromMap；broadcastMessage(source, pkt, false) 的 source 排除）；P4.4 movePlayer 由 `channel.MovePlayer` 的广播 + Player.ApplyMovement 承担（Map.movePlayer 只重设坐标/刷新物件可见性，无物件时为恒等）；foot-hold/life/portal/reactor/掉落/地图特化（送货/月妙等）与 view-range 过滤（Point 重载）待 P4.3b/P6 |
+| server/maps/MapleMap.java | 4359 | ACTV | internal/mapp | P4.2 玩家集合（addPlayer/removePlayer 的 mapobjects 部分 + MapFactory 惰性建图）；P4.3 spawn/despawn 广播（addPlayer → 对同图其他人 spawnPlayerMapobject + 新人对每个老玩家 + 自身；removePlayer → 广播 removePlayerFromMap；broadcastMessage(source, pkt, false) 的 source 排除）；P4.4 movePlayer 由 `channel.MovePlayer` 的广播 + Player.ApplyMovement 承担（Map.movePlayer 只重设坐标/刷新物件可见性，无物件时为恒等）；**P4.5：`BroadcastRanged` = `broadcastMessage(packet, rangedFrom)` Point 重载（`distanceSq <= GameConstants.maxViewRangeSq` = 10000²，source=null 含发送者），另导出常量 `MaxViewRangeSq`**；foot-hold/life/portal/reactor/掉落/地图特化（送货/月妙等）待 P4.3b/P6 |
 | server/maps/MapleMapEffect.java | 35 | TODO | internal/mapp |  |
 | server/maps/MapleMapFactory.java | 775 | TODO | internal/mapp |  |
 | server/maps/MapleMapItem.java | 146 | TODO | internal/mapp |  |
@@ -945,7 +945,7 @@
 | tools/KoreanDateUtil.java | 51 | TODO | internal/protocol+crypto | split per file |
 | tools/MapleAESOFB.java | 130 | DONE | internal/protocol+crypto | split per file |
 | tools/MapleCustomEncryption.java | 74 | DONE | internal/protocol+crypto | split per file |
-| tools/MaplePacketCreator.java | 5826 | ACTV | internal/packet | P4.2：getCharInfo(WARP_TO_MAP)/temporaryStats_Reset/serverMessage；P4.3：spawnPlayerMapobject（SPAWN_PLAYER 0x00A2 全字段 + CHAR_MAGIC_SPAWN 8 处重复）/removePlayerFromMap（0x00A3）+ addRingInfo(List)/addMarriageRingLook；P4.4：movePlayer（MOVE_PLAYER 0x00BB：int cid + int 0 + 移动列表）与 spawnPlayerMapobject 的 pos/stance 改取真实值；其余按域拆分增量迁（LOGIN 系仍在 internal/login/packets.go） |
+| tools/MaplePacketCreator.java | 5826 | ACTV | internal/packet | P4.2：getCharInfo(WARP_TO_MAP)/temporaryStats_Reset/serverMessage；P4.3：spawnPlayerMapobject（SPAWN_PLAYER 0x00A2 全字段 + CHAR_MAGIC_SPAWN 8 处重复）/removePlayerFromMap（0x00A3）+ addRingInfo(List)/addMarriageRingLook；P4.4：movePlayer（MOVE_PLAYER 0x00BB：int cid + int 0 + 移动列表）与 spawnPlayerMapobject 的 pos/stance 改取真实值；P4.5：getChatText/facialExpression/getWhisper/getWhisperReply/getFindReply(WithMap) 五族（`internal/packet/chat.go`）+ serverNotice（P4.5b）；其余按域拆分增量迁（LOGIN 系仍在 internal/login/packets.go） |
 | tools/MockIOSession.java | 156 | TODO | internal/protocol+crypto | split per file |
 | tools/Pair.java | 47 | TODO | internal/protocol+crypto | split per file |
 | tools/StringUtil.java | 143 | TODO | internal/protocol+crypto | split per file |

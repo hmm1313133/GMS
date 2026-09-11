@@ -90,12 +90,24 @@ func TestMovePlayerBroadcastAndPosition(t *testing.T) {
 	assert.NoError(t, mr.Err)
 	assert.Zero(t, mr.Len(), "the movement list is relayed verbatim")
 
-	// The mover's position/stance were updated (Java updatePosition).
+	// The mover's position/stance were updated (Java updatePosition). The
+	// fields are guarded by Player's embedded mutex now: Pos/OldPos are read
+	// under RLock and the stance through its accessor (the field itself is
+	// unexported).
 	pA := cs.Players().GetPlayerByID(31)
 	require.NotNil(t, pA)
-	waitFor(t, func() bool { return pA.Pos == movement.Point{X: 300, Y: -150} })
-	assert.Equal(t, 5, pA.Stance)
-	assert.Equal(t, movement.Point{X: 300, Y: -150}, pA.OldPos)
+	waitFor(t, func() bool {
+		pA.RLock()
+		defer pA.RUnlock()
+		return pA.Pos == movement.Point{X: 300, Y: -150}
+	})
+	pA.RLock()
+	gotPos, gotOld := pA.Pos, pA.OldPos
+	pA.RUnlock()
+	gotStance := pA.Stance()
+	assert.Equal(t, movement.Point{X: 300, Y: -150}, gotPos)
+	assert.Equal(t, 5, gotStance)
+	assert.Equal(t, movement.Point{X: 300, Y: -150}, gotOld)
 
 	// B moves too - the same broadcast path covers it.
 	sendMove(t, connB, sendB, moveBody(movement.Fragment{

@@ -20,10 +20,18 @@ import (
 	"GMS/internal/protocol"
 )
 
-// fakeStore implements characterStore for the channel tests.
+// fakeStore implements characterStore for the channel tests. It also carries
+// the P4.5b configvalues surface: a test that wants switches calls
+// startChannelWithSwitches, which wires it as the configValueStore too - a
+// plain startChannelWith leaves the switch store unwired on purpose, which is
+// the "no switches configured" case (every switch reads 0 = on).
 type fakeStore struct {
 	chars map[int]*database.Character
 	err   error
+	// switches is the ZEVMS switch table this fake answers ConfigValues with.
+	switches map[string]int
+	// cfgErr makes ConfigValues fail (the DB-degraded reload path).
+	cfgErr error
 }
 
 func (f *fakeStore) GetCharacterByID(_ context.Context, id int) (*database.Character, error) {
@@ -31,6 +39,20 @@ func (f *fakeStore) GetCharacterByID(_ context.Context, id int) (*database.Chara
 		return nil, f.err
 	}
 	return f.chars[id], nil
+}
+
+func (f *fakeStore) ConfigValues(_ context.Context) (map[string]int, error) {
+	if f.cfgErr != nil {
+		return nil, f.cfgErr
+	}
+	if f.switches == nil {
+		return map[string]int{}, nil
+	}
+	out := make(map[string]int, len(f.switches))
+	for k, v := range f.switches {
+		out[k] = v
+	}
+	return out, nil
 }
 
 func testChar(id, accID, mapID int) *database.Character {
@@ -54,6 +76,25 @@ func startChannelWith(t *testing.T, cfg Config, store characterStore) *Server {
 	}
 	require.NoError(t, s.Start())
 	t.Cleanup(s.Stop)
+	return s
+}
+
+// startChannelWithSwitches is startChannelWith plus the P4.5b ZEVMS switch
+// table: the same fake answers both optional stores, and the map is published
+// through Server.ReloadConfigValues - the very path cmd/gms runs at startup.
+// A nil switches map means "table has no rows", i.e. every switch reads 0.
+func startChannelWithSwitches(t *testing.T, cfg Config, fs *fakeStore, switches map[string]int) *Server {
+	t.Helper()
+	fs.switches = switches
+	s := startChannelWith(t, cfg, fs)
+	s.SetConfigValues(fs)
+	n, err := s.ReloadConfigValues(context.Background())
+	if err != nil {
+		t.Fatalf("ReloadConfigValues: %v", err)
+	}
+	if n != len(switches) {
+		t.Fatalf("ReloadConfigValues loaded %d switches, want %d", n, len(switches))
+	}
 	return s
 }
 

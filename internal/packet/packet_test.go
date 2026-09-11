@@ -273,3 +273,91 @@ func TestTemporaryStatsResetAndServerMessage(t *testing.T) {
 	assert.Equal(t, byte(1), banner[3])
 	assert.Equal(t, "欢迎", protocol.NewReader(banner[4:]).MapleAsciiString())
 }
+
+// TestServerNoticeAndDropMessagePackets pins the P4.5b notice layout against
+// literal bytes: short SERVERMESSAGE (0x41 LE) + byte type + short length +
+// GB18030 message, built here without the production helper.
+func TestServerNoticeAndDropMessagePackets(t *testing.T) {
+	// serverNotice(1, ...) - ChatHandler.GeneralChat:44.
+	msg := "管理员从后台关闭了聊天功能"
+	enc := protocol.EncodeGB18030(msg)
+	want := append([]byte{0x41, 0x00, 0x01, byte(len(enc)), byte(len(enc) >> 8)}, enc...)
+	assert.Equal(t, want, ServerNoticePacket(msg))
+
+	// dropMessage(5, ...) -> serverNotice(5, ...) - Whisper_Find:265.
+	msg5 := "找人功能被关闭"
+	enc5 := protocol.EncodeGB18030(msg5)
+	want5 := append([]byte{0x41, 0x00, 0x05, byte(len(enc5)), byte(len(enc5) >> 8)}, enc5...)
+	assert.Equal(t, want5, DropMessagePacket(5, msg5))
+
+	// Type 1 is not the type-4 banner: no extra byte before the string.
+	assert.Equal(t, byte(1), ServerNoticePacket("x")[2])
+	assert.NotEqual(t, ServerMessagePacket("x"), ServerNoticePacket("x"))
+}
+
+func TestChatTextAndFacialExpressionPackets(t *testing.T) {
+	// P4.5: getChatText(cid, text, whiteBG, show).
+	chat := ChatTextPacket(31, "你好", true, 7)
+	r := protocol.NewReader(chat)
+	assert.Equal(t, int16(protocol.SendCHATTEXT), r.Short())
+	assert.Equal(t, int32(31), r.Int())
+	assert.Equal(t, byte(1), r.Byte(), "whiteBG = isGM()")
+	assert.Equal(t, "你好", r.MapleAsciiString())
+	assert.Equal(t, byte(7), r.Byte(), "the client's trailing byte")
+	assert.Zero(t, r.Len())
+
+	plain := ChatTextPacket(31, "hi", false, 0)
+	assert.Equal(t, byte(0), plain[6], "whiteBG=false writes 0")
+
+	// facialExpression(from, expression): cid + int expression.
+	expr := FacialExpressionPacket(31, 5)
+	er := protocol.NewReader(expr)
+	assert.Equal(t, int16(protocol.SendFACIAL_EXPRESSION), er.Short())
+	assert.Equal(t, int32(31), er.Int())
+	assert.Equal(t, int32(5), er.Int())
+	assert.Zero(t, er.Len())
+}
+
+func TestWhisperPackets(t *testing.T) {
+	// getWhisper(sender, channel, text) - the channel is written as channel-1.
+	msg := WhisperPacket("甲", 2, "在吗")
+	mr := protocol.NewReader(msg)
+	assert.Equal(t, int16(protocol.SendWHISPER), mr.Short())
+	assert.Equal(t, byte(0x12), mr.Byte())
+	assert.Equal(t, "甲", mr.MapleAsciiString())
+	assert.Equal(t, int16(1), mr.Short())
+	assert.Equal(t, "在吗", mr.MapleAsciiString())
+	assert.Zero(t, mr.Len())
+
+	// getWhisperReply(target, reply).
+	rep := WhisperReplyPacket("乙", 1)
+	rr := protocol.NewReader(rep)
+	assert.Equal(t, int16(protocol.SendWHISPER), rr.Short())
+	assert.Equal(t, byte(0x0A), rr.Byte())
+	assert.Equal(t, "乙", rr.MapleAsciiString())
+	assert.Equal(t, byte(1), rr.Byte())
+	assert.Zero(t, rr.Len())
+
+	// getFindReply(target, channel, buddy): buddy flips the marker 9 -> 72.
+	find := FindReplyPacket("乙", 3, true)
+	fr := protocol.NewReader(find)
+	assert.Equal(t, int16(protocol.SendWHISPER), fr.Short())
+	assert.Equal(t, byte(72), fr.Byte())
+	assert.Equal(t, "乙", fr.MapleAsciiString())
+	assert.Equal(t, byte(3), fr.Byte())
+	assert.Equal(t, int32(2), fr.Int(), "channel-1")
+	assert.Zero(t, fr.Len())
+	assert.Equal(t, byte(9), FindReplyPacket("乙", 3, false)[2])
+
+	// getFindReplyWithMap(target, mapid, buddy): marker 1 + map id + 8 zeros.
+	withMap := FindReplyWithMapPacket("丙", 100000000, false)
+	wmr := protocol.NewReader(withMap)
+	assert.Equal(t, int16(protocol.SendWHISPER), wmr.Short())
+	assert.Equal(t, byte(9), wmr.Byte())
+	assert.Equal(t, "丙", wmr.MapleAsciiString())
+	assert.Equal(t, byte(1), wmr.Byte())
+	assert.Equal(t, int32(100000000), wmr.Int())
+	assert.Equal(t, 8, wmr.Len())
+	assert.Equal(t, make([]byte, 8), wmr.Read(8))
+	assert.Zero(t, wmr.Len())
+}

@@ -8,6 +8,8 @@
 //	go run ./tools/protocoltest -addr 127.0.0.1:8484 -hex "1300504F4E47"
 //	go run ./tools/protocoltest -addr 127.0.0.1:8484 -login testgo:test123
 //	go run ./tools/protocoltest -addr 127.0.0.1:8484 -login testgo:test123 -serverlist -status
+//	go run ./tools/protocoltest -addr 127.0.0.1:7575 -loggedinas 3 -chat hello -hold -wait 10s
+//	go run ./tools/protocoltest -addr 127.0.0.1:7575 -loggedinas 3 -whisper "name:hi" -hold -wait 10s
 package main
 
 import (
@@ -36,7 +38,11 @@ func main() {
 	deleteChar := flag.Int("deletechar", 0, "send DELETE_CHAR for this char id (requires -login -charlist to authorize)")
 	loggedInAs := flag.Int("loggedinas", 0, "send PLAYER_LOGGEDIN for this char id (channel-server probe: -addr 127.0.0.1:7575)")
 	moveTo := flag.String("move", "", "send MOVE_PLAYER (0x0024) to this 'x,y' position after PLAYER_LOGGEDIN (P4.4; pair with -loggedinas)")
-	hold := flag.Bool("hold", false, "keep listening until -wait elapses even after the scripted replies arrived (P4.3 spawn/despawn observation)")
+	chatText := flag.String("chat", "", "send GENERAL_CHAT (0x002D) with this text after PLAYER_LOGGEDIN (P4.5; use ASCII - the Windows shell mangles CJK args)")
+	emote := flag.Int("emote", 0, "send FACE_EXPRESSION (0x002F) with this emote id (P4.5)")
+	whisper := flag.String("whisper", "", "send WHISPER mode 6 to 'name:text' (P4.5)")
+	findWho := flag.String("find", "", "send WHISPER mode 5 'find character' for this name (P4.5)")
+	hold := flag.Bool("hold", false, "keep listening until -wait elapses even after the scripted replies arrived (P4.3 spawn/despawn observation; required to see chat replies, which arrive after WARP_TO_MAP)")
 	wait := flag.Duration("wait", 5*time.Second, "how long to listen for replies")
 	flag.Parse()
 
@@ -151,6 +157,43 @@ func main() {
 		sendPacket(conn, cSend, w.Bytes())
 		fmt.Printf("sent MOVE_PLAYER (0x0024) to (%d,%d)\n", x, y)
 	}
+	if *chatText != "" {
+		w := protocol.NewWriter(16 + len(*chatText))
+		w.Short(int(protocol.RecvGENERAL_CHAT))
+		w.MapleAsciiString(*chatText)
+		w.Byte(0) // Java reads the trailing byte as the getChatText "show" value
+		sendPacket(conn, cSend, w.Bytes())
+		fmt.Printf("sent GENERAL_CHAT (0x002D) %q\n", *chatText)
+	}
+	if *emote != 0 {
+		w := protocol.NewWriter(6)
+		w.Short(int(protocol.RecvFACE_EXPRESSION))
+		w.Int(int32(*emote))
+		sendPacket(conn, cSend, w.Bytes())
+		fmt.Printf("sent FACE_EXPRESSION (0x002F) emote=%d\n", *emote)
+	}
+	if *whisper != "" {
+		i := strings.Index(*whisper, ":")
+		if i < 0 {
+			fmt.Fprintf(os.Stderr, "-whisper: expect name:text\n")
+			os.Exit(1)
+		}
+		w := protocol.NewWriter(32 + len(*whisper))
+		w.Short(int(protocol.RecvWHISPER))
+		w.Byte(6)                        // mode 6 = deliver a whisper
+		w.MapleAsciiString((*whisper)[:i]) // recipient
+		w.MapleAsciiString((*whisper)[i+1:])
+		sendPacket(conn, cSend, w.Bytes())
+		fmt.Printf("sent WHISPER (0x0075) mode=6 to %q\n", (*whisper)[:i])
+	}
+	if *findWho != "" {
+		w := protocol.NewWriter(16 + len(*findWho))
+		w.Short(int(protocol.RecvWHISPER))
+		w.Byte(5) // mode 5 = find a character
+		w.MapleAsciiString(*findWho)
+		sendPacket(conn, cSend, w.Bytes())
+		fmt.Printf("sent WHISPER (0x0075) mode=5 find %q\n", *findWho)
+	}
 
 	// ---- 3. listen for replies ----
 	// Scripted modes exit once their expected replies arrived; bare mode
@@ -189,6 +232,9 @@ func main() {
 		case 0x00A2: // SPAWN_PLAYER - another player entered the map (P4.3)
 		case 0x00A3: // REMOVE_PLAYER_FROM_MAP - another player left the map (P4.3)
 		case 0x00BB: // MOVE_PLAYER - another player moved (P4.4)
+		case 0x00A4: // CHATTEXT - someone talked on the map (P4.5)
+		case 0x00C3: // FACIAL_EXPRESSION - someone emoted (P4.5)
+		case 0x008B: // WHISPER - whisper / find reply (P4.5)
 		case 0x7FFE:
 			if *deleteChar > 0 {
 				sawDeleteResp = true
@@ -292,6 +338,12 @@ func decodeReply(b []byte) {
 		}
 	case 0x0026: // TEMP_STATS_RESET
 		fmt.Println("       [TEMP_STATS_RESET: empty body]")
+	case 0x00A4: // CHATTEXT (P4.5)
+		decodeChatText(b)
+	case 0x00C3: // FACIAL_EXPRESSION (P4.5)
+		decodeFaceExpression(b)
+	case 0x008B: // WHISPER (P4.5)
+		decodeWhisper(b)
 	case 0x0041: // SERVERMESSAGE: P2.5 auto-register notices (serverNotice type 1)
 		decodeServerMessage(b)
 	case 0x0006:
@@ -513,6 +565,73 @@ func decodeMovePlayer(b []byte) {
 	r.Int() // Java writes a literal 0 where startPos used to be
 	n := int(r.Byte())
 	fmt.Printf("       [MOVE_PLAYER: charID=%d commands=%d]\n", cid, n)
+}
+
+// decodeChatText parses MaplePacketCreator.getChatText (0x00A4): int cid +
+// byte whiteBG + str text + byte show.
+func decodeChatText(b []byte) {
+	if len(b) < 7 {
+		fmt.Println("       [CHATTEXT: truncated]")
+		return
+	}
+	r := protocol.NewReader(b[2:])
+	cid := int(r.Int())
+	white := int(r.Byte())
+	text := r.MapleAsciiString()
+	show := int(r.Byte())
+	fmt.Printf("       [CHATTEXT: charID=%d gmBubble=%v text=%q show=%d]\n", cid, white == 1, text, show)
+}
+
+// decodeFaceExpression parses MaplePacketCreator.facialExpression (0x00C3):
+// int cid + int expression.
+func decodeFaceExpression(b []byte) {
+	if len(b) < 10 {
+		fmt.Println("       [FACIAL_EXPRESSION: truncated]")
+		return
+	}
+	r := protocol.NewReader(b[2:])
+	cid := int(r.Int())
+	emote := int(r.Int())
+	fmt.Printf("       [FACIAL_EXPRESSION: charID=%d emote=%d]\n", cid, emote)
+}
+
+// decodeWhisper parses the MaplePacketCreator family behind 0x008B:
+// byte 0x12 (getWhisper: sender + short channel-1 + text), 0x0A
+// (getWhisperReply: target + byte reply) and the find replies
+// (9/72: target + byte kind + int mapid/channel-1 [+ 8 zero bytes]).
+func decodeWhisper(b []byte) {
+	if len(b) < 3 {
+		fmt.Println("       [WHISPER: truncated]")
+		return
+	}
+	r := protocol.NewReader(b[2:])
+	sub := r.Byte()
+	switch sub {
+	case 0x12:
+		sender := r.MapleAsciiString()
+		channel := int(r.Short()) + 1
+		text := r.MapleAsciiString()
+		fmt.Printf("       [WHISPER: from=%q channel=%d text=%q]\n", sender, channel, text)
+	case 0x0A:
+		target := r.MapleAsciiString()
+		reply := int(r.Byte())
+		fmt.Printf("       [WHISPER_REPLY: target=%q delivered=%v]\n", target, reply == 1)
+	case 9, 72:
+		target := r.MapleAsciiString()
+		kind := int(r.Byte())
+		switch kind {
+		case 1:
+			fmt.Printf("       [FIND_REPLY: target=%q on this channel, map=%d]\n", target, int(r.Int()))
+		case 3:
+			fmt.Printf("       [FIND_REPLY: target=%q on channel=%d]\n", target, int(r.Int())+1)
+		case 0, 2:
+			fmt.Printf("       [FIND_REPLY: target=%q kind=%d (cash shop / MTS - not ported)]\n", target, kind)
+		default:
+			fmt.Printf("       [FIND_REPLY: target=%q kind=%d]\n", target, kind)
+		}
+	default:
+		fmt.Printf("       [WHISPER: subtype=0x%02X]\n", sub)
+	}
 }
 
 // parsePoint parses an "x,y" flag value into a map position.

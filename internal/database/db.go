@@ -353,6 +353,22 @@ var sqliteSchema = []string{
 	  chance INTEGER NOT NULL DEFAULT 0,
 	  comments TEXT DEFAULT NULL
 	)`,
+	// configvalues: P4.5b ZEVMS admin-console switches
+	// (migrations/0001_base.sql:1005 `CREATE TABLE configvalues (id, Name,
+	// Val)`), MySQL->SQLite type translation. The column names keep the
+	// dump's `Name`/`Val` capitalisation (both engines match them
+	// case-insensitively).
+	//
+	// Deliberately NOT seeded: the production 079-max2 table carries the
+	// operator's rows, while in dev an empty table has to mean "no switch
+	// configured" - every switch reads 0, i.e. every feature is ON (the Java
+	// convention is val > 0 = off). Seeding anything here would silently
+	// change gameplay in the smoke backend.
+	`CREATE TABLE IF NOT EXISTS configvalues (
+	  id INTEGER PRIMARY KEY AUTOINCREMENT,
+	  Name TEXT NOT NULL DEFAULT '',
+	  Val INTEGER NOT NULL DEFAULT 0
+	)`,
 }
 
 // Close releases the underlying pool. GORM's *gorm.DB has no Close of its

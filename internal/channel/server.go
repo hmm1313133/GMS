@@ -35,6 +35,13 @@ type characterStore interface {
 	GetCharacterByID(ctx context.Context, id int) (*database.Character, error)
 }
 
+// configValueStore is the DB surface behind the ZEVMS switch table
+// (Java gui/Start.GetConfigValues -> Start.ConfigValuesMap). Optional: a nil
+// store means "no switches configured", i.e. every switch reads 0 = on.
+type configValueStore interface {
+	ConfigValues(ctx context.Context) (map[string]int, error)
+}
+
 // Config covers one channel-server process (Java run_startup_configurations
 // reads ZEV.* properties per channel; Go takes them from gms.toml).
 type Config struct {
@@ -78,8 +85,10 @@ func ConfigFrom(cfg config.Root) Config {
 // Server owns all channel listeners (Java: the static instances map plus the
 // startChannel_Main loop).
 type Server struct {
-	cfg      Config
-	log      *slog.Logger
+	cfg Config
+	log *slog.Logger
+	// mu guards the channel map and the optional configvalues store (the
+	// latter is only written at startup, before the listeners accept).
 	mu       sync.Mutex
 	channels map[int]*ChannelServer
 	// onLoad reports live player counts to the login server (Java:
@@ -90,6 +99,14 @@ type Server struct {
 	// store loads character rows for PLAYER_LOGGEDIN (P4.2; Java
 	// MapleCharacter.loadCharFromDB). nil = DB-degraded startup.
 	store characterStore
+	// configStore loads the ZEVMS switch table (P4.5b; Java
+	// gui/Start.GetConfigValues). nil = every switch reads 0 = on.
+	configStore configValueStore
+	// configVals is the loaded switch map (Java Start.ConfigValuesMap),
+	// published by ReloadConfigValues and read - lock-free - from every
+	// player's packet goroutine. The map behind the pointer is never mutated
+	// after publication; a reload swaps in a fresh one.
+	configVals atomic.Pointer[map[string]int]
 }
 
 // New creates the channel-server fleet for the given config.
@@ -127,6 +144,62 @@ func (s *Server) Finder() *world.Finder { return s.find }
 // connection). A nil store keeps the server running but PLAYER_LOGGEDIN closes
 // the session (cmd/gms DB-degraded startup).
 func (s *Server) SetStore(store characterStore) { s.store = store }
+
+// SetConfigValues wires the ZEVMS switch table (Java gui/Start.GetConfigValues'
+// connection). Like SetStore it is optional: with no store wired every switch
+// reads 0, i.e. every gated feature stays on.
+func (s *Server) SetConfigValues(store configValueStore) {
+	s.mu.Lock()
+	s.configStore = store
+	s.mu.Unlock()
+}
+
+// ConfigValues returns the loaded switch map (Java Start.ConfigValuesMap). It
+// is never nil once a reload succeeded, but a server without a store - or one
+// whose load failed - returns nil, and a nil map reads 0 for every key, which
+// is exactly the Java "switch absent = enabled" behaviour.
+//
+// The returned map is a read-only snapshot: reloads publish a new map instead
+// of mutating this one, so callers may read it from any goroutine.
+func (s *Server) ConfigValues() map[string]int {
+	if m := s.configVals.Load(); m != nil {
+		return *m
+	}
+	return nil
+}
+
+// ReloadConfigValues loads the switch table once and caches it, reporting how
+// many switches were read. Java calls gui/Start.GetConfigValues exactly once
+// at boot (Start.startServer:132); cmd/gms does the same here, and the
+// explicit reload exists for the P8 ops panel.
+//
+// It never panics and never blocks a packet handler: with no store wired it is
+// a no-op, and a DB error is returned to the caller (cmd/gms logs it as a
+// warning) while the previously loaded map stays in place - a failed reload
+// must not silently switch features back on.
+func (s *Server) ReloadConfigValues(ctx context.Context) (int, error) {
+	s.mu.Lock()
+	store := s.configStore
+	s.mu.Unlock()
+	if store == nil {
+		return len(s.ConfigValues()), nil
+	}
+	vals, err := store.ConfigValues(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("channel: load configvalues: %w", err)
+	}
+	s.configVals.Store(&vals)
+	return len(vals), nil
+}
+
+// switchOn reports whether a ZEVMS switch disables its feature. The Java
+// convention is uniform: `Start.ConfigValuesMap.get(name) > 0` means OFF, and
+// a key the map does not carry (including every key when nothing was loaded)
+// reads 0 = enabled.
+func (s *Server) switchOn(name string) bool {
+	m := s.configVals.Load()
+	return m != nil && (*m)[name] > 0
+}
 
 // forceRemovePlayerByAccID ports ChannelServer.forceRemovePlayerByAccId(c,
 // accid): when one account logs in again, its previous character - still
@@ -360,7 +433,10 @@ func (h channelHandler) OnPacket(s *netw.Session, body []byte) {
 		return
 	}
 	opcode := protocol.RecvOp(uint16(body[0]) | uint16(body[1])<<8)
-	h.cs.log.Debug("channel packet", "opcode", fmt.Sprintf("%04X", opcode), "len", len(body), "remote", s.RemoteAddr)
+	// NB: keep the %X verb off the RecvOp value itself - it implements
+	// fmt.Stringer, so fmt would hex-encode the ASCII *name* and log
+	// "47454E4552414C5F43484154" instead of the opcode number.
+	h.cs.log.Debug("channel packet", "opcode", fmt.Sprintf("0x%04X", uint16(opcode)), "name", opcode.String(), "len", len(body), "remote", s.RemoteAddr)
 	switch opcode {
 	case protocol.RecvPONG: // 0x13: reply PING (0x14) - Java getPing
 		s.Write(pingPacket())
@@ -368,6 +444,12 @@ func (h channelHandler) OnPacket(s *netw.Session, body []byte) {
 		h.handlePlayerLoggedIn(s, protocol.NewReader(body[2:]))
 	case protocol.RecvMOVE_PLAYER: // 0x24 - Java PlayerHandler.MovePlayer
 		h.handleMovePlayer(s, protocol.NewReader(body[2:]))
+	case protocol.RecvGENERAL_CHAT: // 0x2D - Java ChatHandler.GeneralChat
+		h.handleGeneralChat(s, protocol.NewReader(body[2:]))
+	case protocol.RecvFACE_EXPRESSION: // 0x2F - Java PlayerHandler.ChangeEmotion
+		h.handleFaceExpression(s, protocol.NewReader(body[2:]))
+	case protocol.RecvWHISPER: // 0x75 - Java ChatHandler.Whisper_Find
+		h.handleWhisper(s, protocol.NewReader(body[2:]))
 	}
 }
 

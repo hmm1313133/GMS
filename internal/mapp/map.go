@@ -11,6 +11,11 @@ package mapp
 
 import "sync"
 
+// MaxViewRangeSq is Java GameConstants.maxViewRangeSq (10000^2): the squared
+// distance within which two map objects see each other. The ranged
+// broadcastMessage overloads (chat) filter on it.
+const MaxViewRangeSq = 100000000
+
 // PacketSink is a packet sink for one connected client (Java
 // MapleClient.sendPacket). netw.Session-based players implement it.
 type PacketSink interface {
@@ -30,6 +35,9 @@ type Player interface {
 	// DespawnData returns the despawn packet for this player (Java
 	// MapleMap.removePlayer -> MaplePacketCreator.removePlayerFromMap(id)).
 	DespawnData() []byte
+	// Position returns the live map position (Java MapleMapObject.getPosition);
+	// the ranged broadcastMessage overload filters on it (P4.5 chat).
+	Position() (x, y int16)
 }
 
 // Map is one channel's instance of a map id (Java MapleMap). P4.3 keeps the
@@ -107,13 +115,31 @@ func (m *Map) RemovePlayer(p Player) bool {
 
 // Broadcast writes pkt to every player on the map except (when non-nil) the
 // source (Java MapleMap.broadcastMessage(source, packet, repeatToSource) with
-// repeatToSource=false; the ranged overloads arrive with the view range).
+// repeatToSource=false; the boolean overload runs with an infinite range).
 func (m *Map) Broadcast(pkt []byte, except Player) {
 	for _, q := range m.snapshot() {
 		if except != nil && q.ObjectID() == except.ObjectID() {
 			continue
 		}
 		q.SendPacket(pkt)
+	}
+}
+
+// BroadcastRanged ports MapleMap.broadcastMessage(packet, rangedFrom): pkt
+// goes to every player within maxViewRangeSq of (x, y), *including* the
+// source - Java passes source=null on that overload, and
+// ChatHandler.GeneralChat relies on it to echo the chatter its own line.
+//
+// The comparison mirrors java.awt.Point.distanceSq (dx*dx + dy*dy as doubles),
+// so the int16 coordinates are widened before subtracting.
+func (m *Map) BroadcastRanged(pkt []byte, x, y int16) {
+	for _, q := range m.snapshot() {
+		qx, qy := q.Position()
+		dx := float64(qx) - float64(x)
+		dy := float64(qy) - float64(y)
+		if dx*dx+dy*dy <= MaxViewRangeSq {
+			q.SendPacket(pkt)
+		}
 	}
 }
 

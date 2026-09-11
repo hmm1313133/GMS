@@ -134,7 +134,7 @@
 | tools/Pair/Triple/ArrayMap 等 | 标准库/泛型替代 | ⬜ | 不直接迁移 |
 | tools/Randomizer | internal/rng.go（可注入） | ⬜ | J6 |
 | tools/HexTool, StringUtil, DateUtil, KoreanDateUtil | packet/util.go | ⬜ | 按需收编 |
-| abc/关键字屏蔽, 屏幕关键字, 注册白/黑名单, 拍卖行限制 | anticheat/, config/ | ⬜ | 数据表驱动 |
+| abc/关键字屏蔽, 屏幕关键字, 注册白/黑名单, 拍卖行限制 | anticheat/, config/ | ❌/⬜ | **关键字屏蔽两个类是死代码，不迁**（jar 字节级查证：全 jar 无引用、ini 路径写错、`关键字屏蔽.ini` 不存在 → 原版聊天无任何过滤，见 PROGRESS GMS-P4.5）。注册白/黑名单已由 P2.5 的 `login/register.go` 覆盖；拍卖行限制随 P8 |
 
 ## 11. 不迁移清单（❌，替代方案见 PLAN 3.2）
 

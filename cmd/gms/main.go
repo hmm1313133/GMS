@@ -112,6 +112,17 @@ func main() {
 	// closes the connection (mirrors the login-degraded mode).
 	if db != nil {
 		chs.SetStore(db)
+		// P4.5b: the ZEVMS admin-console switches (Java
+		// gui/Start.GetConfigValues -> Start.ConfigValuesMap, loaded once from
+		// Start.startServer). Read once here, like Java; an empty or unreadable
+		// table leaves every switch at 0 = feature on, so a DB hiccup can never
+		// switch gameplay off.
+		chs.SetConfigValues(db)
+		if n, cerr := chs.ReloadConfigValues(context.Background()); cerr != nil {
+			lg.Warn("configvalues unreadable, all switches stay on", "err", cerr)
+		} else {
+			lg.Info("configvalues loaded", "switches", n)
+		}
 	}
 	ls.SetChannelPortLookup(func(ch int) (int, bool) {
 		cs := chs.Channel(ch)

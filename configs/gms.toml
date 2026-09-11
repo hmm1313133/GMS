@@ -76,7 +76,13 @@ packet_debug = false   # ZEV.封包显示
 packet_trace = false   # ZEV.调试输出封包
 anticheat_suckmob = true
 anticheat_fullscreen = true
-chat_filter = true
+# 注意：原版没有"关键字屏蔽"开关可配 —— abc/屏幕关键字 与 abc/关键字屏蔽
+# 在 079MAX2.jar 里是死代码（全 jar 无任何引用，且 ini 路径写错/文件缺失），
+# 聊天内容不做任何过滤。见 docs/PROGRESS.md GMS-P4.5 的查证结论。
+#
+# 运营开关（聊天/找人/…）不在这里，而在数据库 configvalues 表里（判据 val > 0 = 关闭）：
+# 例如 玩家聊天开关 / 游戏找人开关 / 聊天记录开关。原版由 Swing 控制台改这张表，
+# Go 侧启动时读取一次（GMS-P4.5b）。SQLite 冒烟库没有这张表的数据 ⇒ 全 0 ⇒ 全部功能开启。
 
 [log]
 level = "info"

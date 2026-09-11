@@ -42,12 +42,21 @@ type Player struct {
 	// current on warp (Chr.Map only holds the persisted spawn map).
 	MapIDVal int
 
+	// mu guards the live map state below (Pos/Stance/Fh/OldPos/FallCounter): it
+	// is written on this player's MOVE_PLAYER goroutine and read from *other*
+	// players' goroutines by mapp.Map.BroadcastRanged (P4.5 chat view-range).
+	sync.RWMutex
+
 	// Pos is the live map position (Java MapleMapObject.getPosition),
 	// Stance the animation stance and Fh the foothold id - the state
 	// MovementParse.updatePosition drives (P4.4). OldPos/FallCounter are the
-	// Java fall-detector bookkeeping.
+	// Java fall-detector bookkeeping. Every field of this block is guarded by
+	// the embedded mutex above: writers hold Lock, readers hold RLock (the
+	// accessors below do it). The stance field is unexported only because Go
+	// forbids a field and a method sharing the name Stance on one type; the
+	// exported accessor is Player.Stance.
 	Pos         movement.Point
-	Stance      int
+	stance      int
 	Fh          int
 	OldPos      movement.Point
 	FallCounter int
@@ -69,6 +78,29 @@ func newPlayer(chr *database.Character, sess *netw.Session) *Player {
 // character id (MapleCharacter.getObjectId -> getId). Satisfies mapp.Player.
 func (p *Player) ObjectID() int { return p.ID }
 
+// Position returns the live map position (Java MapleMapObject.getPosition).
+// Satisfies mapp.Player: the ranged broadcastMessage overload (P4.5 chat)
+// filters on it. The read is taken under the embedded mutex, so it is safe
+// from the *other* players' goroutines that run that view-range filter while
+// this player's own MOVE_PLAYER goroutine writes the position.
+func (p *Player) Position() (int16, int16) {
+	p.RLock()
+	defer p.RUnlock()
+	return p.Pos.X, p.Pos.Y
+}
+
+// Stance returns the live animation stance (Java getStance) under the same
+// locking pattern as Position.
+func (p *Player) Stance() int {
+	p.RLock()
+	defer p.RUnlock()
+	return p.stance
+}
+
+// IsGM ports MapleCharacter.isGM: characters.gm > 0 (Java clamps the column at
+// 6 into gmLevel; for the >0 test the clamp is irrelevant).
+func (p *Player) IsGM() bool { return p.Chr != nil && p.Chr.GM > 0 }
+
 // SendPacket writes a packet body to this player's client (Java
 // MapleClient.sendPacket). No-op while the session is absent (a pending
 // CharacterTransfer is not connected yet) or closed.
@@ -82,14 +114,36 @@ func (p *Player) SendPacket(b []byte) {
 // player's SPAWN_PLAYER (MaplePacketCreator.spawnPlayerMapobject) to sink,
 // carrying the live position/stance (P4.4). Satisfies mapp.Player.
 func (p *Player) SendSpawnData(sink mapp.PacketSink) {
-	sink.SendPacket(packet.SpawnPlayerPacket(p.Chr, p.Pos.X, p.Pos.Y, p.Stance))
+	// Snapshot the guarded fields, release the lock, then write to the sink:
+	// the mutex guards the state, never the network call.
+	p.RLock()
+	x, y, stance := p.Pos.X, p.Pos.Y, p.stance
+	p.RUnlock()
+	sink.SendPacket(packet.SpawnPlayerPacket(p.Chr, x, y, stance))
 }
 
 // SetPosition / SetFh / SetStance satisfy movement.Target (Java
 // AnimatedMapleMapObject setters driven by MovementParse.updatePosition).
-func (p *Player) SetPosition(x, y int16) { p.Pos = movement.Point{X: x, Y: y} }
-func (p *Player) SetFh(fh int)           { p.Fh = fh }
-func (p *Player) SetStance(s int)        { p.Stance = s }
+// These run on this player's own connection goroutine; taking the lock is what
+// makes the writes visible to the cross-goroutine readers (Position, Stance,
+// SendSpawnData).
+func (p *Player) SetPosition(x, y int16) {
+	p.Lock()
+	p.Pos = movement.Point{X: x, Y: y}
+	p.Unlock()
+}
+
+func (p *Player) SetFh(fh int) {
+	p.Lock()
+	p.Fh = fh
+	p.Unlock()
+}
+
+func (p *Player) SetStance(s int) {
+	p.Lock()
+	p.stance = s
+	p.Unlock()
+}
 
 // ApplyMovement ports the tail of Java PlayerHandler.MovePlayer:
 // MovementParse.updatePosition(res, chr, 0) followed by
@@ -98,7 +152,9 @@ func (p *Player) SetStance(s int)        { p.Stance = s }
 // objects, so here it collapses into the position update.
 func (p *Player) ApplyMovement(moves []movement.Fragment) {
 	movement.UpdatePosition(moves, p, 0)
+	p.Lock()
 	p.OldPos = p.Pos
+	p.Unlock()
 }
 
 // DespawnData returns this player's REMOVE_PLAYER_FROM_MAP packet (Java

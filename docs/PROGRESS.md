@@ -4,17 +4,17 @@
 > 规则：完成打 `[x]` 并附日期/(提交号)；进行中在行尾标 🔄；新增任务追加编号不改旧号；范围变化记入文末"变更记录"。
 > **文件级追踪**：以 `docs/FILETRACK.md` 为准（533 个 Java 文件逐条标记 TODO/ACTV/DONE/MERG/SKIP），本文件只追踪阶段任务。
 
-最后更新：2026-09-11（P4.4 移动处理完成：MOVE_PLAYER 解析 + 广播 + 坐标落地）
+最后更新：2026-09-12（P4.5 聊天完成：公屏/表情/私聊/找人 + 坐标竞态修正；关键字屏蔽查证后判为"原版无此功能"不做；P4.5b configvalues 开关层）
 
 ## 完成度汇总
 
 | 维度 | 进度 |
 |---|---|
 | Phase | 1 / 12（P1 完成；P0 剩 0.6；P2 代码完成待 P0.6 验收；P3 进行中；P4 进行中） |
-| 任务 | 21 / 77（P0.1-0.5 + P1.1-1.5 + P2.1-2.5 + P3.1 + P3.2 + P4.1 + P4.2 + P4.3 + P4.4；新增 P4.3b） |
-| 文件级（FILETRACK） | DONE 30 / MERG 48 / ACTV 17 / TODO 386（余 SKIP 52，合计 533） |
+| 任务 | 22 / 77（P0.1-0.5 + P1.1-1.5 + P2.1-2.5 + P3.1 + P3.2 + P4.1 + P4.2 + P4.3 + P4.4 + P4.5 + P4.5b；另有 P4.3b 待做） |
+| 文件级（FILETRACK） | DONE 31 / MERG 48 / ACTV 17 / TODO 383（余 SKIP 54，合计 533） |
 | 脚本可用率（P7 起跟踪） | - |
-| 当前里程碑 | **M1：登录闭环（P0–P2）🔄 / M2 数据层起步（P3）→ P4 进入世界（进图 + 同图互见已通）** |
+| 当前里程碑 | **M1：登录闭环（P0–P2）🔄 / M2 数据层起步（P3）→ P4 进入世界（进图 + 同图互见 + 聊天已通）** |
 
 状态图例：⬜ 未开始 | 🔄 进行中 | ✅ 完成 | ⛔ 被阻塞(注明原因) | ❌ 不做(注明替代)
 
@@ -152,9 +152,40 @@
   - 测试：`movement` 5 个（12 种命令往返逐字段 + 丢弃 duration 的字节断言 + NewFh 怪癖 + 坏包 3 例 + updatePosition 取末段）、`packet` +1（MOVE_PLAYER 逐字段）+ spawn 位置断言、`channel` +1（双客户端 wire：B 收 A 的 MOVE_PLAYER、A 不收自己的、位置/oldPos 落地、坏包丢包不关连接）
   - **live 冒烟全过**（SQLite + 双账号 p44a/p44b + 双角色 7/8 直连 7575）：B 收 `[MOVE_PLAYER: charID=7 commands=1]`，A 不收自己的移动；服务端日志 `channel packet opcode=MOVE_PLAYER len=50`（= 2 opcode + 33 前缀 + 15 单条移动）无报错；spawn/despawn 回归正常
   - 探针：`protocoltest` 加 `-move "x,y"`（发 MOVE_PLAYER，body = 33 零字节前缀 + 单条 type 0）与 MOVE_PLAYER（0x00BB）解码
+- [x] GMS-P4.5 聊天（公屏/表情/私聊/找人）✅ 2026-09-12
+  - **关键字屏蔽：查证后确认原版无此功能，不做**（用户拍板，详见文末"变更记录"与下方查证段）——原 PLAN 里写的"abc/关键字屏蔽 表"是**死代码**
+  - **查证结论（jar 字节级，勿再翻案）**：`K:\079MAX2服务端\dist\079MAX2.jar` 的 2441 个 class 里，`abc/屏幕关键字` 与 `abc/关键字屏蔽` 的**类名只出现在自己的 this_class**，全 jar 无任何外部引用（对照实验：同类里的 `两小时限时道具` 等被 `abc/Game`+`server/CashShop` 正常引用）；`getInstance()` 从未被调用 ⇒ 类根本没被加载过、ini 根本没被打开过。`handling/channel/handler/ChatHandler` 不引用 `abc/Game`；唯一编进去的 `Game.屏蔽文字(String)` 是硬编码 `switch { case "擦": return true }`（**整串 equals**，非子串）且同样无人调用。两份参考源码（`I:\Zevms`、`I:\ZEVMS079交流源码`，注意后者是 **GBK** 编码，UTF-8 grep 会误报"不存在"）与 ms079 基线也都无过滤
+  - **部署侧双重失效**：`屏幕关键字.ini` 路径写成 `加载文件\加载文件\屏幕关键字.ini`（部署里**没有**这个嵌套目录 → FileNotFoundException → catch 里只打日志、`PM` 留 null）；`关键字屏蔽.ini` 文件**不存在**；且 ini 是 **UTF-8 with BOM** 而自带 JVM 是 `file.encoding=GBK`（`擦` 会被解成 `鎿?`）。就算接通，`PM=,擦,1,` 按 `split(",")` 得到 `["", "擦", "1", ""]`——含空串，naive 子串匹配会**屏蔽掉每一条消息**
+  - **落地动作**：`config.Game.ChatFilter` / `configs/gms.toml` 的 `chat_filter` 一并删除（它本就没接线，留着是"文档说了但代码不做"的假象），原地留注释指向本条查证
+  - **`internal/packet/chat.go`（新）**：`ChatTextPacket`（= `MaplePacketCreator.getChatText(cid, text, whiteBG, show)`：short CHATTEXT + int cid + byte(whiteBG) + str + byte show）、`FacialExpressionPacket`（= `facialExpression(from, expression)`，Java 里注释掉的 `writeInt(-1)` 不写）、`WhisperPacket`（= `getWhisper`：byte 0x12 + str sender + **short(channel-1)** + str text）、`WhisperReplyPacket`（= `getWhisperReply`：byte 0x0A + str target + byte reply，0=找不到 1=已送达）、`FindReplyPacket`（= `getFindReply`：byte(buddy?72:9) + str target + byte 3 + int(channel-1)）、`FindReplyWithMapPacket`（= `getFindReplyWithMap`：byte(buddy?72:9) + str target + byte 1 + int mapid + **8 个 0 字节**）
+  - **`internal/channel/chat.go`（新）**：`handleGeneralChat`（= `ChatHandler.GeneralChat`）、`handleFaceExpression`（= `PlayerHandler.ChangeEmotion`）、`handleWhisper`（= `ChatHandler.Whisper_Find` 的 mode 5/68/6）；`channelHandler.OnPacket` 新增 `GENERAL_CHAT(0x2D)` / `FACE_EXPRESSION(0x2F)` / `WHISPER(0x75)` 三个分支
+  - **公屏保真点**：① 长度上限是 **UTF-16 码元** `text.length() >= 80` 才丢（GM 豁免），Go 用 `utf16Len` 度量，不是字节数；② 广播用的是 `broadcastMessage(pkt, player.getPosition())` —— **Point 重载带视野过滤**（`GameConstants.maxViewRangeSq` = 10000²），且 Java 在该重载里传 `source = null`，**说话人自己也会收到自己那行**；③ `whiteBG = isGM()`（GM 白气泡）、`show` = 客户端包尾字节原样回写
+  - **表情保真点**：`ChangeEmotion` 是 **boolean 重载**（无限视野 + 排除 source，自己不收自己的表情）；`emote > 7` 需要背包里有 `5159992 + emote` 的现金道具，否则记作弊并丢弃——背包是 P5.2，Go 选择"emote ∉ (0,7] 一律丢弃"（不凭空发放角色没有的道具效果）
+  - **私聊/找人保真点**：mode 5/68 先查**本频道** `PlayerStorage.getCharacterByName`（命中回 `getFindReplyWithMap`），再走 `World.Find.findChannel`（>0 则回 `getFindReply`，`ch < 0` 的 -10 商城 / -20 MTS 分支 Go 未实现故落入"找不到"）；**GM 隐身规则** `!player.isGM() || c.getPlayer().isGM() && player.isGM()`——普通玩家永远查不到 GM（回 `getWhisperReply(target, 0)`）；mode 6 走 `World.Find` → 收件人收 `getWhisper`，发件人收 `getWhisperReply`，而**非 GM 私聊 GM 时 reply 归 0**（发出去了但假装失败）。`player == null`（注册表陈旧）时 Java 直接 `break` **不回包**，Go 保真
+  - **`internal/mapp`（P4.5）**：`Player` 接口加 `Position() (x, y int16)`；新增 `Map.BroadcastRanged(pkt, x, y)`（= `MapleMap.broadcastMessage(packet, rangedFrom)`，`distanceSq <= MaxViewRangeSq`，**含 source**）；新增常量 `MaxViewRangeSq = 100000000`（= `GameConstants.maxViewRangeSq`，10000²）；比较用 float64 加宽后再相减，对齐 `java.awt.Point.distanceSq`
+  - **`internal/channel`（P4.5）**：`Player` 加 `Position()`（= `MapleMapObject.getPosition`）与 `IsGM()`（= `MapleCharacter.isGM`，`characters.gm > 0`）
+  - **并发修正（重要）**：`Map.BroadcastRanged` 会读**别的玩家**的坐标，而坐标是在各自连接的 MOVE_PLAYER goroutine 里写的——`Player` 的 `Pos/stance/Fh/OldPos/FallCounter` 因此加 `sync.RWMutex` 保护（`Position()`/`Stance()` 取锁读、`SetPosition/SetFh/SetStance` 取锁写、`ApplyMovement` 取锁更新 OldPos，`SendSpawnData` 先取快照再发、不跨网络写持锁），否则是跨 goroutine 无同步读写（`-race` 在本机跑不了：无 gcc/CGO）。**`Stance` 字段因 Go 不允许同名字段+方法而改为非导出 `stance` + 导出 `Stance()` 访问器**（唯一外部读者是 movement_test）
+  - **有意偏差（已注记）**：不复制 `CheatTracker.checkMsg()`（只累加 `msgsPerSecond`，全树无人读，纯空转）、`CommandProcessor.processCommand`（GM 指令 P7）、隐身 GM 的 `broadcastGMMessage` 分支、仙人模式/雪球赛/彩旦等活动钩子、`getCanTalk()` 禁言门禁（无禁言系统）。`玩家聊天开关`/`游戏找人开关` **原本被跳过，本轮已由 P4.5b 转正**（见下）；`聊天记录开关` 的文件日志留待运营侧实现；`脚本显码开关` 只是调试输出，不迁
+  - 测试：`packet` +2（CHATTEXT 逐字段 + FACIAL_EXPRESSION；whisper/reply/find/findWithMap 四包逐字段含 buddy 9→72 与 channel-1）、`mapp` +1（BroadcastRanged 的 9999 在内 / 10001 在外 / **8000,6000 恰好等于 maxViewRangeSq 仍在内** + 含 source）、`channel` +4 wire 端到端（公屏广播与 talking 者自收 + 走出 20000 距离后对方收不到、长度上限 GM 豁免、表情广播与 source 排除 + emote>7 丢弃、私聊三态 + 跨频道找人 + 查无此人）
+  - **live 冒烟全过**（SQLite + 双账号 `p45sa`/`p45sb` + 双角色直连 7575，探针日志实录）：B 收 `[CHATTEXT: charID=13 gmBubble=false text="hello" show=0]`，A 也收自己的同一条；**视野过滤实测有判别力**——A `-move 20000,0 -chat faraway` 时 B 收到 A 的 `MOVE_PLAYER` 但**收不到**该条聊天，A 改变 50 像素后 `-chat nearby` 则 B 收到；`[FACIAL_EXPRESSION: charID=13 emote=5]` 只到 B（A 无自回显）；`[WHISPER: from="45111" channel=1 text="hi"]` + 发件人 `delivered=true`、查无此人 `delivered=false`、`-find` 回 `[FIND_REPLY: target="45222" on this channel, map=0]`；服务端 debug 日志三条 opcode 长度分别 10/6/14 与布局吻合，无 WARN/ERROR/panic；冒烟后 8 个测试角色全部删净、两个账号已删、进程已停
+  - **冒烟顺带抓到的既有 bug（已修）**：`channel.OnPacket` 的 debug 行原来是 `fmt.Sprintf("%04X", opcode)`，而 `protocol.RecvOp` 实现了 `fmt.Stringer` ⇒ `%X` 会把**名字**再做十六进制编码，日志打出 `47454E4552414C5F43484154` 而不是 `002D`；现改为 `uint16(opcode)` + 独立的 `name` 字段（另注意该行是 Debug 级，`level="info"` 下根本不输出）
+  - **探针使用注意**：建角名必须匹配 `^[0-9\u4e00-\u9fa5]{2,5}$`（`internal/login/chars.go`）——**ASCII 字母会被拒**，冒烟要用数字名
+  - 探针：`protocoltest` 加 `-chat`/`-emote`/`-whisper "name:text"`/`-find <name>` 四个开关 + CHATTEXT(0x00A4)/FACIAL_EXPRESSION(0x00C3)/WHISPER(0x008B 含 0x12/0x0A/9/72 四个子型) 人类可读解码
+
 - [ ] GMS-P4.3b 地图实例数据（Map.wz `info`/`life`/`foothold`/`portal` = Java `MapleMapFactory`）
   - 消费方：怪物/NPC 生成（P6）、传送门/换图（P4.4 warp 未做，见 FALL 计数）；`Map(id)` 惰性实例已就位
-- [ ] GMS-P4.5 聊天 + 关键字屏蔽
+- [x] GMS-P4.5b configvalues 开关层（`gui/Start.ConfigValuesMap`，`SELECT * FROM configvalues`）✅ 2026-09-12
+  - **本轮查证（推翻旧结论）**：`configvalues` 表**确实有数据**——权威库 `079-max2` 里 322 行（`SELECT Name,Val`，GBK 转 UTF-8 读），含 `玩家聊天开关=0`、`聊天记录开关=0`、`玩家找人开关`-类键 `游戏找人开关=0`、`群显示游戏聊天开关=0`、`游戏显示群聊天开关=0`。此前文档写的"configvalues 表不在 dump"指的是**表数据没进 SQLite**（`migrations/0001_base.sql:1005` 只有 DDL），不是表不存在
+  - 落点：`internal/database` 新 DAO（`ConfigValues` → `map[string]int`）+ 启动期装载 + `Start.ConfigValuesMap` 语义（Java `Start.java:1567` 逐行 `ConfigValuesMap.put(name, val)`；`MapleMapFactory.java:45` 另有一份同名 map）。缺表/空表时**一律按 0 处理**（Java 也是 `get(...)` 拆箱 NPE 的隐患，Go 用 0 兜底），即"默认全开"
+  - 消费者（按 Java 判据"`>0` = 关闭"）：`玩家聊天开关`（关聊天时回 `serverNotice(1, "管理员从后台关闭了聊天功能")` 并 return）、`游戏找人开关`（关找人时 `dropMessage(5, "找人功能被关闭")`）、`聊天记录开关`（关则把每条公屏写 `服务端记录信息/玩家档案<名>/聊天记录.txt`）
+  - 理由：这层一上，P4.2/P4.5 里所有"configvalues 不在 dump → 跳过"的注记（登陆验证开关/GM 隐身/聊天开关/找人开关/飞天检测）**可以逐个转正**，且运营改库即生效
+  - **实装（2026-09-12）**：`database.ConfigValues(ctx)`（GORM `SELECT name, val FROM \`configvalues\``，空表回非 nil 空 map）+ `sqliteSchema` 补表（**故意不塞种子行**：空表 = 全 0 = 全开）；`channel.Server` 加可选 `configValueStore` + `SetConfigValues`/`ConfigValues()`/`ReloadConfigValues(ctx)`/`switchOn(name)`，map 用 `atomic.Pointer` 发布（包处理 goroutine 无锁读，热重载失败保留旧 map —— 不会"失败即全开"）；`cmd/gms` 在 `chs.SetStore(db)` 旁一并装载并打 `configvalues loaded`（DB 降级/出错只 warn，全开）
+  - **新封包**：`packet.ServerNoticePacket(msg)`（= `MaplePacketCreator.serverNotice(type,msg)` → 私有 `serverMessage(type, channel, msg, megaEar)`：short SERVERMESSAGE(0x0041) + byte type + [type==4 才有的 byte 1] + str；类型 1/5 无尾部）与 `packet.DropMessagePacket(kind,msg)`（= `MapleCharacter.dropMessage` 的 serverNotice 分支：type -2 的玩家商店气泡未迁）。**既有 `ServerMessagePacket`（type 4）字节未动**
+  - **`dropMessage(5, …)` 不是聊天气泡**：它是 SERVERMESSAGE **type 5**（"粉红的全文"），所以关找人时发的是 `41 00 05 <len> <GB18030>` 而不是 ChatText
+  - **门禁位置**：`玩家聊天开关` 在 `handleGeneralChat` 读完 text/unk 之后、GM 长度上限之前（Java 顺序：指令处理 → 聊天开关 → 长度上限）；`游戏找人开关` 在 `handleWhisper` 的 mode 5/68 分支里、**读收件人名之前**（对齐 Java `:264` 在 `readMapleAsciiString` 之前）。`玩家聊天开关` **不管**私聊，`游戏找人开关` **不管** mode 6
+  - **P7 注意（子代理标注）**：Java 的 `CommandProcessor.processCommand` 在聊天开关**之前**，所以关聊天时 GM 指令仍可用；Go 现在没有指令处理器（每行都是聊天），等 P7 落地时这道开关必须保持在指令处理之后
+  - 测试：`database` +2（空表 → 非 nil 空 map；含中文键的 3 行往返）、`packet` +1（serverNotice/dropMessage 逐字节）、`channel` +5（开关=1 时 exact 字节 + 双方静默无 CHATTEXT、开关=0 回归、关找人时 mode 5/68 回 notice 而 mode 6 照常送达、未接线时全开、装载出错时不崩且全开）
+  - **尚未实现**：`聊天记录开关`（依赖尚未移植的 `FileoutputUtil` 文件日志，`服务端记录信息/玩家档案<名>/聊天记录.txt`）—— 开关已装载但未消费，代码里留了注明日期的位置注释；其余可转正的开关（登陆验证/GM 隐身/飞天检测）留给后续
 - [ ] GMS-P4.6 NPC 交互占位
 - 冒烟：双客户端同图互见/聊天/掉线重连
 
@@ -248,3 +279,5 @@
 - 2026-09-11 P4.2 完成（player 装配与会话迁移/进图）：新增 `internal/packet`（MaplePacketCreator/PacketHelper 共享层：`AddCharStats` 从 login 搬到此处复用、`CharInfoPacket`=getCharInfo、`TemporaryStatsResetPacket`、`ServerMessagePacket`、`RandStream`=client/PlayerRandomStream）与 `internal/mapp`（最小地图实例占位）；`internal/channel` 实装 `InterServerHandler.Loggedin2`（挂起表优先 → `loadCharFromDB` → 同账号顶号 → 注册 + 滚动公告 → WARP_TO_MAP + TEMP_STATS_RESET → `map.addPlayer`）+ `CharacterTransfer` 挂起表 + 地图注册表 + `OnClose` 注销；`database.GetCharacterByID` 新增。live 冒烟：`-loggedinas 3` 收 `WARP_TO_MAP len=273`（三连随机 int 相同，保真 CRand32 怪癖）。
 - 2026-09-11 P4.3 完成（视野广播 spawn/despawn）：`internal/packet` 加 `SpawnPlayerPacket`（= `MaplePacketCreator.spawnPlayerMapobject`，249 字节逐字段保真 + `CHAR_MAGIC_SPAWN` 8 处重复）与 `RemovePlayerFromMapPacket`，`addCharLook` 提到 `packet.AddCharLook(..., mega)` 共享（login=true / 频道=false，P2.4 断言不变）；`internal/mapp` 的 `Player` 接口扩为 `PacketSink` + `SendSpawnData` + `DespawnData`，`Map.AddPlayer/RemovePlayer/Broadcast` 复刻 `MapleMap.addPlayer/removePlayer/broadcastMessage` 的视野广播；`internal/channel` 的进图与 `OnClose` 自动带上广播。新增任务 GMS-P4.3b（Map.wz 地图实例数据 = MapleMapFactory，供 P4.4 传送/换图与 P6 怪物生成）。live 冒烟：双账号双角色同图互见（A 收 B 的 SPAWN_PLAYER、B 收 A 的 + 自身，B 退出后 A 收 REMOVE_PLAYER_FROM_MAP）。
 - 2026-09-11 P4.4 完成（移动处理）：新增 `internal/movement`（`server/movement` 的 LifeMovementFragment + `MovementParse`：`Parse`/`Serialize`/`SerializeMovementList`/`UpdatePosition`）；`packet.MovePlayerPacket`（= `MaplePacketCreator.movePlayer`，int 0 + 移动列表）与 `SpawnPlayerPacket(..., x, y, stance)`（spawn 起用真实坐标）；`channel.handleMovePlayer`（`PlayerHandler.MovePlayer`：skip(33) → parse → 广播给同图其他玩家 → 更新自身 Pos/Stance/Fh/OldPos），`Player` 加坐标态。**保真校正**：MovePlayer 的 `broadcastMessage(player, pkt, false)` 是无限视野（无 maxViewRangeSq 过滤），此前文档的"要补坐标过滤重载"作废。live 冒烟：B 收 A 的 MOVE_PLAYER，A 不收自己的。
+- 2026-09-12 P4.5 完成（聊天）：新增 `internal/packet/chat.go`（`getChatText`/`facialExpression`/`getWhisper`/`getWhisperReply`/`getFindReply`/`getFindReplyWithMap` 逐字段保真）与 `internal/channel/chat.go`（`ChatHandler.GeneralChat` + `PlayerHandler.ChangeEmotion` + `ChatHandler.Whisper_Find` 的 mode 5/68/6），`OnPacket` 接 `GENERAL_CHAT(0x2D)`/`FACE_EXPRESSION(0x2F)`/`WHISPER(0x75)`；`internal/mapp` 加 `BroadcastRanged` + `MaxViewRangeSq`（= MapleMap 的 `broadcastMessage(packet, rangedFrom)` Point 重载，**有**视野过滤且**含**发送者——公屏靠它让说话人看到自己那行，而表情/移动走 boolean 重载：无限视野 + 排除自己）。**顺带修掉一个跨 goroutine 数据竞态**：`BroadcastRanged` 会读别的玩家的坐标，故 `channel.Player` 的坐标态改由 `sync.RWMutex` 保护（`Stance` 字段因此改名 `stance` + 导出访问器）。**范围变更**：原 PLAN 的"关键字屏蔽（abc/关键字屏蔽 表）"经 jar 字节级查证确认为**死代码**（全 jar 无引用、ini 路径写错且文件缺失、唯一编进去的 `Game.屏蔽文字` 硬编码且无人调用），**用户拍板不实现**，并删掉从未接线的 `chat_filter` 配置项。
+- 2026-09-12 P4.5b 完成（configvalues 开关层）：查证纠正——`configvalues` 表**有真实数据**（权威库 322 行），此前"不在 dump"指的是表数据没进 SQLite。新增 `database.ConfigValues` DAO（`SELECT name,val FROM ConfigValues`）+ SQLite 建表（空表 = 全 0 = 全开）+ `channel.Server` 可选装载 + `cmd/gms` 启动期读取；判据沿用 Java 的 **`val > 0` = 关闭**，把 `玩家聊天开关`（关聊天回 `serverNotice(1,"管理员从后台关闭了聊天功能")`）与 `游戏找人开关`（关找人只拦 WHISPER mode 5/68，回 `dropMessage(5,"找人功能被关闭")`）转正。`聊天记录开关` 依赖尚未移植的文件日志，留给运营侧。
