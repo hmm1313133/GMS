@@ -235,7 +235,10 @@ func (h handler) OnPacket(s *netw.Session, body []byte) {
 		return
 	}
 	opcode := protocol.RecvOp(uint16(body[0]) | uint16(body[1])<<8)
-	h.srv.log.Debug("login packet", "opcode", fmt.Sprintf("%04X", opcode), "len", len(body), "remote", s.RemoteAddr)
+	// %X must not be applied to the RecvOp value directly: it implements
+	// fmt.Stringer, so fmt would hex-encode the ASCII *name* (the log showed
+	// "4C4F47494E5F50415353574F5244" instead of 0x0001).
+	h.srv.log.Debug("login packet", "opcode", fmt.Sprintf("0x%04X", uint16(opcode)), "name", opcode.String(), "len", len(body), "remote", s.RemoteAddr)
 	switch opcode {
 	case protocol.RecvPONG: // 0x13: reply PING (0x14) - Java getPing
 		s.Write(PingPacket())

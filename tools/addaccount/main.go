@@ -17,6 +17,17 @@
 //	addaccount -config configs/gms.toml -banmac AA-BB-CC-DD-EE-FF
 //	addaccount -config configs/gms.toml -unbanip 10.0.0.
 //	addaccount -config configs/gms.toml -unbanmac AA-BB-CC-DD-EE-FF
+//
+// P4.5b admin switches (configvalues: the Java Swing console's 按键开关; >0 =
+// feature OFF). The server reads them once at startup:
+//
+//	addaccount -config configs/gms.toml -configvalues
+//	addaccount -config configs/gms.toml -configvalue "玩家聊天开关=1"
+//	addaccount -config configs/gms.toml -unsetconfigvalue 玩家聊天开关
+//
+// -unlock clears a stale accounts.loggedin (Java MapleClient.unlockAcc's
+// SQL-by-name form): a probe killed mid-session otherwise answers
+// ALREADY_LOGGED_IN (reason 7) until the 20s transition window expires.
 package main
 
 import (
@@ -27,6 +38,8 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 
 	"GMS/internal/config"
@@ -47,6 +60,11 @@ func main() {
 	unbanIP := flag.String("unbanip", "", "remove an ipbans rule")
 	unbanMac := flag.String("unbanmac", "", "remove a macbans entry")
 	flag.StringVar(del, "del", "", "alias of -remove")
+	// P4.5b configvalues switches (admin console keys)
+	listCfg := flag.Bool("configvalues", false, "list configvalues switches (>0 = feature OFF)")
+	setCfg := flag.String("configvalue", "", `set a switch, e.g. "玩家聊天开关=1" (restart to apply)`)
+	unsetCfg := flag.String("unsetconfigvalue", "", "remove a switch row (reads 0 = enabled)")
+	unlock := flag.String("unlock", "", "clear a stale accounts.loggedin for this account")
 	flag.Parse()
 
 	cfg, err := config.Load(*cfgPath)
@@ -77,11 +95,20 @@ func main() {
 		execBan(ctx, db, db.RemoveIPBan, *unbanIP, "ipban removed: %q\n")
 	case *unbanMac != "":
 		execBan(ctx, db, db.RemoveMacBan, *unbanMac, "macban removed: %q\n")
+	case *listCfg:
+		listConfigValues(ctx, db)
+	case *setCfg != "":
+		setConfigValue(ctx, db, *setCfg)
+	case *unsetCfg != "":
+		unsetConfigValue(ctx, db, *unsetCfg)
+	case *unlock != "":
+		unlockAccount(ctx, db, *unlock)
 	case *name != "" && *pass != "":
 		upsert(ctx, db, *name, *pass, *gender)
 	default:
 		fmt.Fprintln(os.Stderr, "need -name NAME -pass PASS, -show NAME, -del NAME, "+
-			"or a ban-list action (-bans, -banip/-unbanip, -banmac/-unbanmac)")
+			"a ban-list action (-bans, -banip/-unbanip, -banmac/-unbanmac), "+
+			"or a switch action (-configvalues, -configvalue NAME=VAL, -unsetconfigvalue NAME)")
 		os.Exit(2)
 	}
 }
@@ -163,6 +190,69 @@ func execBan(ctx context.Context, db *database.DB, op func(context.Context, stri
 		fail(err)
 	}
 	fmt.Printf(okFmt, arg)
+}
+
+// listConfigValues dumps the ZEVMS admin switches (P4.5b). The Java console is
+// the original editor; this is the CLI stand-in until the P8 ops panel.
+func listConfigValues(ctx context.Context, db *database.DB) {
+	vals, err := db.ConfigValues(ctx)
+	if err != nil {
+		fail(err)
+	}
+	if len(vals) == 0 {
+		fmt.Println("configvalues: (empty - every switch reads 0 = enabled)")
+		return
+	}
+	fmt.Printf("configvalues: %d switch(es) (>0 = feature OFF)\n", len(vals))
+	for name, val := range vals {
+		state := "on"
+		if val > 0 {
+			state = "OFF"
+		}
+		fmt.Printf("  %s = %d (%s)\n", name, val, state)
+	}
+}
+
+// setConfigValue writes one switch: -configvalue "玩家聊天开关=1" turns chat
+// off, "=0" turns it back on, and -unsetconfigvalue removes the row.
+func setConfigValue(ctx context.Context, db *database.DB, arg string) {
+	i := strings.LastIndex(arg, "=")
+	if i <= 0 {
+		fail(fmt.Errorf("-configvalue: want NAME=VALUE, got %q", arg))
+	}
+	name := strings.TrimSpace(arg[:i])
+	val, err := strconv.Atoi(strings.TrimSpace(arg[i+1:]))
+	if err != nil {
+		fail(fmt.Errorf("-configvalue: bad value in %q: %w", arg, err))
+	}
+	if err := db.SetConfigValue(ctx, name, val); err != nil {
+		fail(err)
+	}
+	state := "on"
+	if val > 0 {
+		state = "OFF"
+	}
+	fmt.Printf("configvalue %q = %d (%s) - restart the server to apply\n", name, val, state)
+}
+
+func unsetConfigValue(ctx context.Context, db *database.DB, name string) {
+	if err := db.DeleteConfigValue(ctx, name); err != nil {
+		fail(err)
+	}
+	fmt.Printf("configvalue %q removed (reads 0 = enabled)\n", name)
+}
+
+// unlockAccount clears a stale loggedin flag so the next login succeeds.
+func unlockAccount(ctx context.Context, db *database.DB, name string) {
+	n, err := db.UnlockAccountByName(ctx, name)
+	if err != nil {
+		fail(err)
+	}
+	if n == 0 {
+		fmt.Fprintf(os.Stderr, "account %q not found\n", name)
+		os.Exit(1)
+	}
+	fmt.Printf("account %q unlocked (loggedin=0)\n", name)
 }
 
 func nullStr(s sql.NullString) string {

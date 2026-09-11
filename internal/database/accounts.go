@@ -160,6 +160,22 @@ func (db *DB) ResetAccountLogin(ctx context.Context, id int) error {
 	return db.accountUpdates(ctx, id, map[string]any{"loggedin": LoginNotLoggedIn})
 }
 
+// UnlockAccountByName clears the stale loggedin flag of the account with that
+// name (the Java statement behind MapleClient.unlockAcc is keyed by name:
+// "UPDATE accounts SET loggedin = 0 WHERE name = ?"). It is the smoke-test /
+// ops escape hatch for a session that was force-killed: without it the account
+// answers ALREADY_LOGGED_IN (7) until the 20s transition window expires.
+// Returns the number of rows touched (0 = no such account).
+func (db *DB) UnlockAccountByName(ctx context.Context, name string) (int64, error) {
+	res := db.WithContext(ctx).Model(&Account{}).
+		Where("name = ?", name).
+		Update("loggedin", LoginNotLoggedIn)
+	if res.Error != nil {
+		return 0, fmt.Errorf("database: unlock account %q: %w", name, res.Error)
+	}
+	return res.RowsAffected, nil
+}
+
 // CreateAccount inserts a login account (tools/addaccount -pass, the smoke
 // helper). passwordSHA1 is plain SHA-1 hex with salt cleared, i.e. what the
 // login chain expects from a fresh row. Returns the new id.

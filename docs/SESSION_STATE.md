@@ -26,7 +26,7 @@ go test  ./...                                   ✅ 全绿
 - **live 验证全过（GORM 后）**：MySQL 只读冒烟（账号/角色真表/掉落 900/14243/16）+ SQLite 完整握手（auto-register → CHOOSE_GENDER → SERVERLIST → SERVERSTATUS → CHARLIST）。
 - ✅ **`go build ./...`（全包）恢复全绿**：本会话把 pre-refactor 残留改名隔离（`main.go`→`_legacy_main.go`、`handing`→`_handing`、`client`→`_client`；下划线前缀是 Go 工具链官方忽略机制，**文件内容原封未动、可随时改回**，比原计划的 cleanup-oldlayout.ps1 删除方案更保守）。`go mod tidy` 随之首次跑通，gnet/zap/properties/maplelib 等垃圾依赖从 go.mod 清除。
 
-### 断点 N 会话（2026-09-12，P4.5 聊天 + 坐标竞态修正 + P4.5b configvalues 开关层）
+### 断点 N 会话（2026-09-12，P4.5 聊天 + P4.5b configvalues 开关层；提交 c75f0a4）
 
 1. **范围**：PLAN 的 `GMS-P4.5`「聊天（公屏/私聊/表情）+ 关键字屏蔽」。本轮把聊天三件事做完（含 live 冒烟），并按**用户拍板**对"关键字屏蔽"做查证后收口（不实现），另追加 **GMS-P4.5b**（configvalues 开关层）把 `玩家聊天开关`/`游戏找人开关` 转正。
 2. **入口**：`channelHandler.OnPacket` 新增 `GENERAL_CHAT`（**0x2D**）/ `FACE_EXPRESSION`（**0x2F**）/ `WHISPER`（**0x75**）三个分支（opcode 名与值对过 `recvops.properties` 与 `properties/recv.ini`，两处一致）。
@@ -51,7 +51,8 @@ go test  ./...                                   ✅ 全绿
     - `gofmt -l` 会把**几乎全树**文件标成未格式化 —— 那是 CRLF 检出 + gofmt 的组合假象（已提交的 `config.go` 同样被标），**不要**为了它批量改行尾。
     - 连权威 MySQL 查中文列：`mysql.exe` 要写成 `"--host=127.0.0.1"` 这种 **equals 形式**（`-h127.0.0.1` 会被 PowerShell 拆参 → `Unknown MySQL server host '127'`），`--default-character-set=utf8` + `Out-File -Encoding utf8` 才不 mojibake；库名用 `--database=079-max2`。
     - `I:\ZEVMS079交流源码` 的源码是 **GBK**，UTF-8 grep 会误报"没有该文件/没有匹配"。
-12. **文档**：PROGRESS（P4.5 打勾 + 查证段 + 新增 P4.5b + 变更记录）、FILETRACK（ChatHandler → DONE、Summary DONE 30→31 / TODO+ACTV 403→402、MapleMap 与 MaplePacketCreator 备注）、MIGRATION_MAP（§10 那行改 ❌/⬜）、SESSION_STATE（本条 + §四 断点更新）。
+12. **文档**：PROGRESS（P4.5 打勾 + 关键字屏蔽查证段 + 新增并打勾 P4.5b + 变更记录 + 汇总 22/77）、FILETRACK（ChatHandler → DONE；`abc/关键字屏蔽`、`abc/屏幕关键字` 两个死代码文件 → SKIP；MapleMap/MaplePacketCreator 备注；**Summary DONE 31 / MERG 48 / ACTV 17 / TODO 383 / SKIP 54 = 533**）、MIGRATION_MAP（§10 那行改 ❌/⬜）、PLAN（P4.5 范围改写 + P4.5b 行）、SESSION_STATE（本条 + §四 断点更新 + 目录速览 + 环境备忘）。
+13. **提交**：`c75f0a4`（P4.5 + P4.5b 同一提交；**注意**：`chat.go` 的两个开关门禁调用 P4.5b 新加的 `Server.switchOn`，若拆成两次提交，中间那次 `go build ./internal/channel` 会失败——已用临时 worktree 在提交后实测过 `go build ./...` + `go test ./internal/...` 全绿）。交付前建议同样跑一次"提交树独立编译"（`git worktree add --detach <tmp> HEAD` → build/test → `git worktree remove --force`）。
 
 ### 断点 M 会话（2026-09-12，P4.4 移动处理 MOVE_PLAYER）
 
