@@ -11,7 +11,7 @@
 | 维度 | 进度 |
 |---|---|
 | Phase | 1 / 12（P1 完成；P0 剩 0.6；P2 代码完成待 P0.6 验收；P3 进行中；P4 进行中） |
-| 任务 | 22 / 77（P0.1-0.5 + P1.1-1.5 + P2.1-2.5 + P3.1 + P3.2 + P4.1 + P4.2 + P4.3 + P4.4 + P4.5 + P4.5b；另有 P4.3b 待做） |
+| 任务 | 23 / 77（P0.1-0.5 + P1.1-1.5 + P2.1-2.5 + P3.1 + P3.2 + P4.1-P4.5 + P4.5b；另有 P4.3b 待做） |
 | 文件级（FILETRACK） | DONE 31 / MERG 48 / ACTV 17 / TODO 383（余 SKIP 54，合计 533） |
 | 脚本可用率（P7 起跟踪） | - |
 | 当前里程碑 | **M1：登录闭环（P0–P2）🔄 / M2 数据层起步（P3）→ P4 进入世界（进图 + 同图互见 + 聊天已通）** |
@@ -185,6 +185,9 @@
   - **门禁位置**：`玩家聊天开关` 在 `handleGeneralChat` 读完 text/unk 之后、GM 长度上限之前（Java 顺序：指令处理 → 聊天开关 → 长度上限）；`游戏找人开关` 在 `handleWhisper` 的 mode 5/68 分支里、**读收件人名之前**（对齐 Java `:264` 在 `readMapleAsciiString` 之前）。`玩家聊天开关` **不管**私聊，`游戏找人开关` **不管** mode 6
   - **P7 注意（子代理标注）**：Java 的 `CommandProcessor.processCommand` 在聊天开关**之前**，所以关聊天时 GM 指令仍可用；Go 现在没有指令处理器（每行都是聊天），等 P7 落地时这道开关必须保持在指令处理之后
   - 测试：`database` +2（空表 → 非 nil 空 map；含中文键的 3 行往返）、`packet` +1（serverNotice/dropMessage 逐字节）、`channel` +5（开关=1 时 exact 字节 + 双方静默无 CHATTEXT、开关=0 回归、关找人时 mode 5/68 回 notice 而 mode 6 照常送达、未接线时全开、装载出错时不崩且全开）
+  - **live 冒烟全过（P4.5b 门禁，实拖开关验的）**：开关全空时 A `-chat` 收自己的 CHATTEXT、B 也收到，`-find` 回 `FIND_REPLY`（启动日志 `configvalues loaded switches=0`）；置 `玩家聊天开关=1`/`游戏找人开关=1` 重启后（`switches=2`）A 收 `SERVERMESSAGE type=1 "管理员从后台关闭了聊天功能"` + `type=5 "找人功能被关闭"`，**两个探针都没有任何 CHATTEXT/FIND_REPLY**；同一轮 `-whisper`（mode 6）仍 `delivered=true`、B 仍收 WHISPER 与 FACIAL_EXPRESSION ⇒ 两条门禁只拦各自该拦的。测完清空开关 + 删角删号停进程
+  - **运维入口（提交 44f164c）**：`tools/addaccount` 加 `-configvalues`（列全部开关并标注 `>0 = OFF`）、`-configvalue "NAME=VAL"`、`-unsetconfigvalue NAME`、`-unlock NAME`（清陈旧 `accounts.loggedin`，等价 Java `unlockAcc` 的按名 UPDATE）——P8 运营面板前改开关的唯一入口
+  - **顺带修的既有日志 bug（两处同类，提交 44f164c）**：`channel.OnPacket` 与 `login.handler.OnPacket` 的 debug 行用 `fmt.Sprintf("%04X", opcode)`，而 `protocol.RecvOp` 实现 `fmt.Stringer` ⇒ 打出的是**名字的十六进制**（`47454E4552414C5F43484154` / `4C4F47494E5F50415353574F5244`）；已改为 `uint16(opcode)` 取数字 + 独立 `name` 字段
   - **尚未实现**：`聊天记录开关`（依赖尚未移植的 `FileoutputUtil` 文件日志，`服务端记录信息/玩家档案<名>/聊天记录.txt`）—— 开关已装载但未消费，代码里留了注明日期的位置注释；其余可转正的开关（登陆验证/GM 隐身/飞天检测）留给后续
 - [ ] GMS-P4.6 NPC 交互占位
 - 冒烟：双客户端同图互见/聊天/掉线重连

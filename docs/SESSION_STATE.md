@@ -52,7 +52,13 @@ go test  ./...                                   ✅ 全绿
     - 连权威 MySQL 查中文列：`mysql.exe` 要写成 `"--host=127.0.0.1"` 这种 **equals 形式**（`-h127.0.0.1` 会被 PowerShell 拆参 → `Unknown MySQL server host '127'`），`--default-character-set=utf8` + `Out-File -Encoding utf8` 才不 mojibake；库名用 `--database=079-max2`。
     - `I:\ZEVMS079交流源码` 的源码是 **GBK**，UTF-8 grep 会误报"没有该文件/没有匹配"。
 12. **文档**：PROGRESS（P4.5 打勾 + 关键字屏蔽查证段 + 新增并打勾 P4.5b + 变更记录 + 汇总 22/77）、FILETRACK（ChatHandler → DONE；`abc/关键字屏蔽`、`abc/屏幕关键字` 两个死代码文件 → SKIP；MapleMap/MaplePacketCreator 备注；**Summary DONE 31 / MERG 48 / ACTV 17 / TODO 383 / SKIP 54 = 533**）、MIGRATION_MAP（§10 那行改 ❌/⬜）、PLAN（P4.5 范围改写 + P4.5b 行）、SESSION_STATE（本条 + §四 断点更新 + 目录速览 + 环境备忘）。
-13. **提交**：`c75f0a4`（P4.5 + P4.5b 同一提交；**注意**：`chat.go` 的两个开关门禁调用 P4.5b 新加的 `Server.switchOn`，若拆成两次提交，中间那次 `go build ./internal/channel` 会失败——已用临时 worktree 在提交后实测过 `go build ./...` + `go test ./internal/...` 全绿）。交付前建议同样跑一次"提交树独立编译"（`git worktree add --detach <tmp> HEAD` → build/test → `git worktree remove --force`）。
+13. **提交**：`c75f0a4`（P4.5 + P4.5b 同一提交；**注意**：`chat.go` 的两个开关门禁调用 P4.5b 新加的 `Server.switchOn`，若拆成两次提交，中间那次 `go build ./internal/channel` 会失败——已用临时 worktree 在提交后实测过 `go build ./...` + `go test ./internal/...` 全绿）。交付前建议同样跑一次"提交树独立编译"（`git worktree add --detach <tmp> HEAD` → build/test → `git worktree remove --force`）。收尾提交 `44f164c`（`addaccount -configvalue/-unsetconfigvalue/-configvalues/-unlock` + 两处 opcode 日志 %X-on-Stringer 修复）。
+14. **P4.5b 门禁 live 冒烟（实拖开关验的，非纸面）**：开关空 → A `-chat` 自收 CHATTEXT、B 也收、`-find` 回 FIND_REPLY；置 `玩家聊天开关=1`/`游戏找人开关=1` 重启 → A 收 `SERVERMESSAGE type=1 "管理员从后台关闭了聊天功能"` 与 `type=5 "找人功能被关闭"`，**两个探针零 CHATTEXT / 零 FIND_REPLY**；同一轮 `-whisper`（mode 6）仍 `delivered=true`、B 仍收 WHISPER 与 FACIAL_EXPRESSION。测完开关清空、删角删号、停进程。
+15. **本轮踩坑（新增）**：
+    - 探针被强杀后账号 `loggedin` 残留 ⇒ 删角先答 reason 7。旧办法是等 20s transition；本轮加了 `addaccount -unlock <账号名>`（= `unlockAcc` 的按名 `UPDATE accounts SET loggedin = 0 WHERE name = ?`）直接解，冒烟收尾不用等。
+    - `%X` 打在实现 `fmt.Stringer` 的类型上会输出**名字的十六进制**（`protocol.RecvOp` 踩了两次：登录服与频道服的包日志）。要数字就 `uint16(opcode)`，名字另开一个字段。
+    - `gofmt -l` 对**几乎全树**报警是 CRLF 检出的假象，别为了它批量改行尾；新文件保持与邻文件一致的行尾即可。
+    - `go test -race` 本机不可用（无 gcc/CGO）——并发正确性只能靠结构 + review（P4.5 的坐标竞态就是这么抓到的）。
 
 ### 断点 M 会话（2026-09-12，P4.4 移动处理 MOVE_PLAYER）
 
