@@ -66,7 +66,7 @@ I:\GMS
 ├── cmd/gms/                 # 入口：装配 config→db→wz→servers
 ├── internal/
 │   ├── config/              # TOML 加载（映射 ZEV.* ini 键 + ServerProperties）
-│   ├── database/            # sqlx 连接池、DAO 基座、事务助手
+│   ├── database/            # GORM 连接池、DAO 基座（断点 I 起，mysql+纯Go sqlite 双方言）
 │   ├── netw/                # TCP acceptor、session、帧 codec（加解密）
 │   ├── crypto/              # MapleAESOFB + Shanda 自定义变换（J1）
 │   ├── protocol/            # opcode 表(155/245)、PacketReader/Writer、封包结构体
@@ -98,7 +98,7 @@ I:\GMS
 | 语言/运行时 | Go 1.22+ | 静态单二进制，部署替代 jdk 捆绑 |
 | 网络 | 标准库 `net`，goroutine/conn | Netty 4 语义直接映射；gnet 不必要（旧尝试弃用，见 J8） |
 | 加解密 | 自实现 `internal/crypto` | MapleAESOFB+Shanda 必须逐字节对齐（J1） |
-| DB | `database/sql` + `go-sql-driver/mysql` + `sqlx` | 替代 JDBC 裸 SQL；沿用 079-max2 schema 起步（J4） |
+| DB | `gorm.io/gorm` + `glebarez/sqlite`（纯 Go）+ `gorm.io/driver/mysql` | 替代 JDBC 裸 SQL；沿用 079-max2 schema 起步（J4；断点 I 从 sqlx 迁来） |
 | 脚本 | `github.com/dop251/goja` | 纯 Go ES 引擎替代 Rhino；宿主 API 由 Go 注入（J2） |
 | wz | 自研 v079 读取器 `internal/wzs` | 免 Java/XML 依赖链；备选 XML 路线（J3） |
 | 配置 | `spf13/viper`（TOML） | 替代 ServerProperties+ini 双轨 |

@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"GMS/internal/config"
 )
 
@@ -64,12 +66,10 @@ func TestSQLiteAccountChain(t *testing.T) {
 	defer cancel()
 
 	// smoke-test account (breakpoint B' step 3: gender=1 to skip CHOOSE_GENDER)
-	if _, err := db.ExecContext(ctx,
+	require.NoError(t, db.WithContext(ctx).Exec(
 		"INSERT INTO accounts (name, password, salt, gender, banned, gm, loggedin) "+
 			"VALUES ('testgo', ?, NULL, 1, 0, 0, 0)",
-		sha1hex("test123")); err != nil {
-		t.Fatal(err)
-	}
+		sha1hex("test123")).Error)
 
 	// unknown name -> nil, nil (the auth layer's "no account" branch)
 	if a, err := db.GetAccountByName(ctx, "nobody"); err != nil || a != nil {
@@ -129,9 +129,8 @@ func TestSQLiteAccountChain(t *testing.T) {
 		t.Fatalf("password upgrade wrong: pw=%q salt=%+v", a2.Password, a2.Salt)
 	}
 
-	if _, err := db.ExecContext(ctx, "UPDATE accounts SET banned = 1 WHERE id = ?", a.ID); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, db.WithContext(ctx).
+		Exec("UPDATE accounts SET banned = 1 WHERE id = ?", a.ID).Error)
 	if err := db.UnbanAccount(ctx, a.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -170,12 +169,10 @@ func TestSQLiteBanAndAutoRegister(t *testing.T) {
 		t.Fatalf("IsBannedMac on a fresh db = %v, %v", yes, err)
 	}
 
-	if _, err := db.ExecContext(ctx, "INSERT INTO ipbans (ip) VALUES ('10.0.0.'), ('192.168.0.7')"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.ExecContext(ctx, "INSERT INTO macbans (mac) VALUES ('AA-BB-CC-DD-EE-FF')"); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, db.WithContext(ctx).
+		Exec("INSERT INTO ipbans (ip) VALUES ('10.0.0.'), ('192.168.0.7')").Error)
+	require.NoError(t, db.WithContext(ctx).
+		Exec("INSERT INTO macbans (mac) VALUES ('AA-BB-CC-DD-EE-FF')").Error)
 	ips, err = db.BannedIPs(ctx)
 	if err != nil || len(ips) != 2 {
 		t.Fatalf("BannedIPs = %v, %v", ips, err)

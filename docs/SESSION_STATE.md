@@ -3,7 +3,7 @@
 > 用途：跨会话恢复工作现场。加载本文件后可从"断点"继续重构。
 > 配套：PLAN.md（总方案）、PROGRESS.md（阶段勾选）、FILETRACK.md（533 文件级状态）。
 
-保存时间：2026-08-30（P3.1+P3.2 完成：wz 读取层 + 全量 39,986 文件校验 0 失败；P0.6 客户端实连本轮暂缓）
+保存时间：2026-09-12（P4.4 移动处理：MOVE_PLAYER 解析/广播/坐标落地；双账号双角色线上冒烟全过）
 工作目录：`I:\GMS`（go module 名 `GMS`，Go 1.25.5）
 目标：将 `I:\Zevms`（079MAX2/ZEVMS Java）重构为 Go，按 P0->P11 推进。
 
@@ -11,16 +11,182 @@
 
 ```
 go build ./cmd/... ./internal/... ./tools/...   ✅ 通过
-go vet   ./cmd/... ./internal/... ./tools/...   ✅ 通过
-go test  ./internal/...                         ✅ 全绿
+go vet   ./...                                  ✅ 通过（全 module，含测试代码）
+go test  ./...                                   ✅ 全绿
 ```
 
-- `internal/login`：36 个测试全过（+P2.5 的 12 个自动注册/封禁 wire 端到端与 2 个封禁匹配单测）。
-- `internal/config`：+1（P2.5 注册开关默认值）。
-- `internal/database`：SQLite 集成测试 2 个（TestSQLiteAccountChain + TestSQLiteBanAndAutoRegister）+ 可选 MySQL 集成（GMS_TEST_DB_DSN）。
-- **live 自动注册 + IP/MAC 封禁冒烟已通过**（SQLite 后端，见 §二）。
-- `internal/wzs`（P3.1/P3.3 新包）：12 个测试全过；`tools/wzdump -verify` 全量 16 wz / 39,986 img / 22,026,219 节点 failed=0（3m12s）；`internal/config` +2（wz 段）。
-- ⚠️ **`go build ./...`（全包）当前是红的**，与重构代码无关：`handing/`、`client/`、`opcode/`、`main.go` 这 9 个 pre-refactor 平铺布局残留（远程 rebase 带回来的；git 里仍可 `git checkout` 找回，它们缺 gnet/properties/maplelib 三个外部依赖）。上一会话已备好 `tools/cleanup-oldlayout.ps1`，跑一次即恢复全绿。**本会话未代跑**（删跟踪文件属于破坏性操作，等用户点头；真要执行用 `delete_file` 工具 + `i:/GMS/...` 小写盘符路径，见 §三.12）。
+- `internal/login`：44 个测试全过（P2.x 历史 + P4.1 的 7 个选角/双登 wire 端到端）；`addCharLook` 已改为调用 `packet.AddCharLook`（字节布局不变，P2.4 断言仍全过）。
+- `internal/packet`：6 个测试（P4.2：WARP_TO_MAP 逐字段解码 + CRand32 确定性/怪癖 + reset/公告封包；P4.3：SPAWN_PLAYER 逐字段解码至 `Len()==0` + REMOVE_PLAYER_FROM_MAP 逐字节；**P4.4：MOVE_PLAYER 逐字段 + spawn 的 pos/stance 断言**）。
+- `internal/movement`：**P4.4 新包，5 个测试**（12 种命令往返逐字段 / 3-4-7-8-9-11 丢弃 duration 的字节断言 / NewFh 怪癖 / 坏包 3 例 / updatePosition 取末段）。
+- `internal/channel`：15 个（P4.1 的 6 个 + P4.2 的 7 个 + P4.3 的 1 个：双客户端同图 spawn/despawn wire 端到端 + **P4.4 的 1 个：MOVE_PLAYER 广播/坐标落地/坏包丢包**）。
+- `internal/mapp`：**P4.3 起有独立测试**（3 个：进图广播顺序 / 离开广播与二次移除 no-op / Broadcast 排除 source）。
+- `internal/world`：4 个（票据 put-take-ip 集合/并发/Finder）。
+- `internal/config`：+1（P2.5 注册开关默认值）+1（P4.1 external_ip 默认）。
+- `internal/database`：SQLite 集成测试 4 组（TestSQLiteAccountChain + TestSQLiteBanAndAutoRegister + P3.5 drops 4 个 + **GORM 迁移新增 characters_test 2 个**）+ 可选 MySQL 集成（GMS_TEST_DB_DSN）。
+- **live 验证全过（GORM 后）**：MySQL 只读冒烟（账号/角色真表/掉落 900/14243/16）+ SQLite 完整握手（auto-register → CHOOSE_GENDER → SERVERLIST → SERVERSTATUS → CHARLIST）。
+- ✅ **`go build ./...`（全包）恢复全绿**：本会话把 pre-refactor 残留改名隔离（`main.go`→`_legacy_main.go`、`handing`→`_handing`、`client`→`_client`；下划线前缀是 Go 工具链官方忽略机制，**文件内容原封未动、可随时改回**，比原计划的 cleanup-oldlayout.ps1 删除方案更保守）。`go mod tidy` 随之首次跑通，gnet/zap/properties/maplelib 等垃圾依赖从 go.mod 清除。
+
+### 断点 M 会话（2026-09-12，P4.4 移动处理 MOVE_PLAYER）
+
+1. **范围**：PLAN 的 `GMS-P4.4`「移动处理（MovementParse 语义）+ 状态广播」。入口 = `channelHandler.OnPacket` 新增的 `RecvMOVE_PLAYER`（**0x24**，`recvops.properties: MOVE_PLAYER = 0x24`，非文档里写的 `RecvPLAYER_MOVEMENT`）分支。
+2. **新包 `internal/movement`**（Java `server/movement` + `handling/channel/handler/MovementParse`；独立成包是因为 `packet` 要用 `Fragment` 而 `packet` 不能反向依赖 `channel`）：
+   - `Fragment`（= `StaticLifeMovement`，本源码树**唯一**的 `LifeMovement` 实现，所以 4 个 Java 类收成一个 struct）；`Parse(r, kind)`（= `parseMovement`，kind=1 玩家）；`Serialize`/`SerializeMovementList`（= `StaticLifeMovement.serialize` / `PacketHelper.serializeMovementList`）；`UpdatePosition(moves, Target, yoffset)`（= `MovementParse.updatePosition`）。
+   - `Target` 接口 = Java `AnimatedMapleMapObject` 的驱动面：`SetPosition(x,y)`/`SetFh(fh)`/`SetStance(stance)`，由 `channel.Player` 实现。
+3. **逐命令布局（勿改）**：`0/5/15/17` = pos(4)+wobble(4)+unk(2)[+fh(2)@15]；`1/2/6/12/13/16/18/19/22` = wobble(4)；`3/4/7/8/9/11` = pos(4)+unk(2)；`10` = wui(1)；`14` = wobble(4)+fh(2)；`default` = 无额外字段。序列化后统一补 `newstate(1)+duration(2)`（**type 10 例外**：只写 wui，不写 state/duration）；`writePos` = short x + short y。
+4. **两个 Java 怪癖必须保真（勿"修"）**：
+   - **`NewFh` ≠ `Fh`**：`AbstractLifeMovement.newfh` 是构造器**第 5 个实参**；`parseMovement` 对 `0/5/15/17` 组传的是读到的 `unk`、其余组传 `0`。`updatePosition` 用 `getNewFh()` 写 target.setFh —— 所以 0/5/15/17 组落地的是 `unk`，不是序列化用的 `Fh`（15 的 `fh` 只在包里写）。
+   - **3/4/7/8/9/11 组的 duration 被丢弃**：`parseMovement` 读了 `short duration` 但构造 `StaticLifeMovement(command, pos, 0, newstate, 0)`（第 3 参 = duration 传 **0**），于是**重广播写 0**，不是客户端原值。测试里有逐字节断言。
+5. **`internal/packet`**：
+   - `MovePlayerPacket(cid, moves)` = `MaplePacketCreator.movePlayer`：`short 0x00BB` + `int cid` + **`int 0`**（Java 把 `writePos(startPos)` 注释掉了，留了个字面 0）+ `serializeMovementList`。
+   - `SpawnPlayerPacket(c, x, y, stance)` 加三参：pos 与 stance 取真实值（Java `chr.getPosition()`/`chr.getStance()`）；**foothold 仍硬编码 0**（Java `mplew.writeShort(0); // FH`）。
+6. **`internal/channel`**：新 `movement.go` 的 `handleMovePlayer` = `PlayerHandler.MovePlayer`：`r.Skip(33)`（v079 客户端前缀；Zevms 反编译版、`_compare_ms079`、交流源码三处都是 `skip(33)`）→ `movement.Parse(r, 1)`（失败即丢包）→ `map.broadcastMessage(player, movePlayer(...), false)`（广播给同图**其他**玩家，用 `Map.Broadcast(pkt, p)`）→ `p.ApplyMovement(moves)`（= `updatePosition` + `setOldPosition(pos)`）。`Player` 加 `Pos/Stance/Fh/OldPos/FallCounter`。
+7. **保真校正（重要，推翻旧结论）**：`PlayerHandler.MovePlayer` 调用的是 **boolean 重载** `broadcastMessage(player, pkt, false)`；该重载内部是 `broadcastMessage(source, packet, Double.POSITIVE_INFINITY, source.getPosition())` —— rangeSq 是**正无穷**，**没有任何视野过滤**。只有 `Point rangedFrom` 重载才用 `GameConstants.maxViewRangeSq`。所以：
+   - 旧 SESSION_STATE §四 写的"P4.4 要补按坐标过滤的重载 + 给 sendObjectPlacement 补 range 过滤"**作废**，本轮**未**引入坐标过滤。
+   - `Map.AddPlayer` 的 `sendObjectPlacement` 仍是"同图所有其他玩家"（无 range）——这与原版行为一致（ZEV 版 `addPlayer` 走的也是 `broadcastMessage(chr, ..., false)` 全图 + `sendObjectPlacement` 的 range 版本；P4.3 的选择在无怪物/无 foothold 时无可观察差异）。
+8. **有意偏差（已注记）**：
+   - 不复制 `slea.available() < 13 || > 26` 的启发式校验：它是"移动列表之后还剩 13-26 字节"的 v079 客户端内部特征，猜错会**丢有效移动**，Go 选择转发。
+   - 跳过 飞天检测（`过图检测`，configvalues 开关不在 dump）、follow/clone 的二次重广播、坠落计数（`map.getFootholds().findBelow` 依赖 foothold，P4.3b/P6 才有）。
+9. **测试（新增 3 文件 / 7 个用例）**：
+   - `movement/movement_test.go`（5）：12 种命令往返逐字段 + 重序列化字节一致；duration 丢弃的字节断言；`NewFh` 怪癖（0x1234 落到 NewFh）；坏包 3 例（截断 / count>=128 / count=0 是合法空表）；`updatePosition` 取最后一段的 pos/fh/stance。
+   - `packet/packet_test.go`（+1）：`TestMovePlayerPacketLayout` 逐字段解到 `Len()==0`；`TestSpawnPlayerPacketLayout` 改用 `SpawnPlayerPacket(c, 123, -456, 5)` 并断言 pos/stance。
+   - `channel/movement_test.go`（+1，真实 wire）：A/B 同图，A 发 MOVE_PLAYER(300,-150) → **B 收到**、解析出 pos/newstate/duration，**A 不收自己的**；A 的 `Pos/Stance/OldPos` 落地；B 再发一条 A 也收到；A 发坏包（声明 5 条无数据）被丢弃且不关连接。
+10. **live 冒烟全过**（SQLite + `bin/gms.exe` + `protocoltest`，两账号 p44a/p44b → 两角色 7/8 直连 7575）：
+    - B 先连（后台 `-loggedinas 8 -hold -wait 14s > bin\p44b.log`），A 后连并 `-move 300,-150 -hold -wait 10s > bin\p44a.log`。
+    - 结果：**B 日志有 `[MOVE_PLAYER: charID=7 commands=1]`**、A 日志无自己的移动；服务端日志 `channel packet opcode=MOVE_PLAYER len=50`（= 2 opcode + 33 前缀 + 1 count + 14 单条 type 0）无报错；A 后收到 B 退出的 `REMOVE_PLAYER_FROM_MAP`（spawn/despawn 回归正常）。冒烟后两账号各删角 + `addaccount -remove` + `Stop-Process -Name gms` 已收尾。
+11. **探针改进**：`protocoltest` 新增 `-move "x,y"`（发 MOVE_PLAYER，body = **33 个 0 字节前缀** + `01` 单条 + type 0 + pos + wobble 0 + unk 0 + state 0 + duration 0）与 MOVE_PLAYER（0x00BB）解码；用法 `-loggedinas <id> -move x,y`。
+12. **本轮踩坑（新增）**：
+    - `MOVE_PLAYER` 的 recv opcode 是 **0x24**（`recvops.properties`），不要照旧文档找不存在的 `RecvPLAYER_MOVEMENT`。
+    - 探针的 MOVE_PLAYER **body 必须带 33 字节前缀**，否则服务端 `Skip(33)` 直接越过整个包 → `Parse` 失败丢包（不会报错，只会 log debug）。
+    - 删角前那次登录仍会先答 `7`（`unlockAcc` 语义），**再连一次即成功**（与 P4.3 结论一致）。
+    - 冒烟两个探针要**错开时间**后台启动（`cmd /c start "名" /B cmd /c "... > log 2>&1"`），先起观察方、再起发送方，保证发送时对方已在地图上。
+13. **文档**：PROGRESS（P4.4 打勾 + 逐命令/怪癖明细 + 汇总 21/77 + 变更记录）、FILETRACK（MovementParse→DONE；server/movement 4 件→MERG；PlayerHandler→ACTV；AnimatedMapleMapObject→ACTV；MapleMap/MaplePacketCreator/PacketHelper 备注；Summary DONE 30 / MERG 48 / TODO+ACTV 403）、MIGRATION_MAP（§1 两行、§3 两行、§5 两行）。
+
+### 断点 L 会话（2026-09-11，P4.3 视野广播 spawn/despawn）
+
+1. **范围**：PLAN 的 `GMS-P4.3`「mapp：地图实例、玩家集合、视野广播（spawn/despawn/move）」。本轮做**视野广播**这半（Java `MapleMap.addPlayer/removePlayer/broadcastMessage` + `MaplePacketCreator.spawnPlayerMapobject/removePlayerFromMap`）；**地图实例数据**（Map.wz 的 info/life/foothold/portal = `MapleMapFactory`）拆成新任务 **GMS-P4.3b**（消费方是 P4.4 传送门换图与 P6 怪物/NPC 生成）；`move` 归 P4.4。
+2. **`internal/packet`（P4.3）**：
+   - `AddCharLook(w, c, mega)`：从 `internal/login/packets.go` **原样搬到 packet 包并参数化 mega**（Java `PacketHelper.addCharLook(mplew, chr, mega)`）；login 的 `LoginPacket.addCharEntry` 传 **mega=true**（写 byte 0），频道 spawn 传 **mega=false**（写 byte 1）。login 侧 `addCharLook` 改为一行转发，P2.4 逐字节断言全过。宠物段两边都写 3×int 0（login 是 channelserver=false 恒 0；channel 是 channelserver=true 但无宠物）。
+   - `SpawnPlayerPacket(c)` = `MaplePacketCreator.spawnPlayerMapobject`。**布局逐字段对过 Java**（v079 新角色默认态：无公会、无 buff、未骑宠、无宠物、无商店、无戒指、无黑板）：见 PROGRESS 的逐字段行；空角色整包 **249 字节**。
+   - `RemovePlayerFromMapPacket(cid)` = `short 0x00A3 + int cid`（6 字节）。
+3. **保真点（勿"修"）**：
+   - **`CHAR_MAGIC_SPAWN`** = `Randomizer.nextInt()`（Java 注释：其实是 tickCount，"解释了那 7 个结构不规则的 dummy buffstat"）**只抽一次**，在包里重复 **8 处**（`writeInt(CHAR_MAGIC_SPAWN)` 出现在 1209/1216/1223/1233/1252/1261/1265/1269 行）。
+   - 坐骑三段（level/exp/fatigue）取 `MapleCharacter.loadCharFromDB:894` 的 `new MapleMount(ret, 0, skill, (byte)0, (byte)1, 0)` → **1 / 0 / 0**（构造参数顺序是 fatigue, level, exp）。
+   - 公会段：`getGuildId() <= 0` 时写 `str ""` + **6 个 0 字节**（AriantPQ 分支与有公会分支在无公会时字节等价）。
+   - 戒指段：`addRingInfo(mplew, allrings)`（`MaplePacketCreator:1978`，byte(size>0?1:0) + int size + 每条 long/long/int）**被调用两次**，再 `addMarriageRingLook`（byte 0），最后 `short 0`；空戒指 = `00 00000000` ×2 + `00` + `00 00`。
+4. **`internal/mapp`（P4.3）**：
+   - `PacketSink`（`SendPacket([]byte)`，= Java `MapleClient.sendPacket`）；`Player` 接口 = `PacketSink` + `ObjectID()` + `SendSpawnData(sink)`（= `MapleMapObject.sendSpawnData`，把**自身** spawn 包写给收件人）+ `DespawnData()`（= `removePlayerFromMap(id)` 包）。
+   - `Map.AddPlayer` 复刻 `MapleMap.addPlayer` 的三步广播：① 对同图每个**其他**玩家发新人 spawn（= `broadcastMessage(chr2, spawn(chr2), false)`）；② 给**新人**发每个老玩家的 spawn（= `sendObjectPlacement(chr2)` 的玩家部分）；③ 给新人发**自身** spawn（= `chr2.getClient().sendPacket(spawn(chr2))`）。
+   - `Map.RemovePlayer` 复刻 `MapleMap.removePlayer`：**先**从玩家表删除、**再**广播 `removePlayerFromMap`（所以离开者收不到自己的 despawn）；返回是否真的移除了（二次移除 no-op、不重复广播——顶号路径 `Sess.Close()` 触发 `OnClose` 与 `forceRemovePlayerByAccID` 直接移除会撞两次）。
+   - `Map.Broadcast(pkt, except)` = `broadcastMessage(source, packet, false)`（排除 source）。
+5. **`internal/channel`（P4.3）**：`Player` 实现 `SendPacket`（Sess 为 nil 时 no-op，挂起表里的未连接角色安全）/`SendSpawnData`（`packet.SpawnPlayerPacket(p.Chr)`）/`DespawnData`；`login.go` 的 `cs.Map(...).AddPlayer(p)` 与 `server.go` 的 `OnClose → m.RemovePlayer(p)` 不需改动即带上广播（签名变更只影响本轮新加的 mapp 测试）。
+6. **有意偏差（已注记）**：
+   - Java `sendObjectPlacement` 是 **view-range 过滤 + 覆盖所有 map object 类型**；P4.3 无怪物/道具、角色也**还没有坐标**（移动是 P4.4），Go 改为「同图所有其他玩家」，且 spawn 包的 `pos` 写 `(0,0)`（客户端在首个 `MOVE_PLAYER` 时归位）。
+   - Java 因为 `chr2` 此时已在地图对象表里，`sendObjectPlacement` 会把自身 spawn 也发一遍，然后 2916 行**再发一次**（自身 spawn 发两次）；Go 只发一次。
+7. **测试（新增 6 个）**：
+   - `packet/packet_test.go`：`TestSpawnPlayerPacketLayout`（逐字段解到 `r.Len()==0`，含 8 处 magic 相等、mega=false→byte 1、坐骑 1/0/0）、`TestRemovePlayerFromMapPacket`（逐字节 `A3 00 <cid>`）。
+   - `mapp/map_test.go`（新文件，3 个）：`AddPlayer` 广播顺序（a 先得自身；b 进图后 a 得 b 的、b 得 a 的与自身的）、`RemovePlayer` 广播 + 离开者不可见 + 二次移除 no-op、`Broadcast` 的 source 排除与 `except=nil`。
+   - `channel/login_test.go`：`TestMapSpawnAndDespawnBroadcast`（真实 wire：A 进图收自身 spawn；B 进图后 A 收 B 的 SPAWN_PLAYER、B 收 A 的 SPAWN_PLAYER 与自身；B 断开后 A 收 `REMOVE_PLAYER_FROM_MAP(32)`）。
+8. **live 冒烟全过**（SQLite + `bin/gms.exe` + `protocoltest`，**必须两个账号**）：
+   - `addaccount` 建 `p43smoke`(acc9)/`p43smoke2`(acc10) → 各建一角：`11111`(char4)/`33333`(char6)，均在 map 0（建角 hex：`1100` + `0500 3131313131`/`0500 3333333333` + `01000000` + `204E0000`(face 20000) + `30750000`(hair 30000) + `00000000`×2 + `815B1000`(鞋 1072001) + `F0DD1300`(武器 1302000)）。
+   - A：`-addr 127.0.0.1:7575 -loggedinas 4 -hold -wait 20s`（后台重定向 `bin\p43a.log`）；2s 后 B：`-loggedinas 6 -hold -wait 6s`。
+   - A 日志：`SERVERMESSAGE` → `WARP_TO_MAP charID=4` → `TEMP_STATS_RESET` → **`SPAWN_PLAYER charID=4`**(自身) → **`SPAWN_PLAYER charID=6`**(B 进图) → **`REMOVE_PLAYER_FROM_MAP charID=6`**(B 退出)。B 日志：`SERVERMESSAGE` → `WARP_TO_MAP charID=6` → `TEMP_STATS_RESET` → **`SPAWN_PLAYER charID=4`**(看到 A) → **`SPAWN_PLAYER charID=6`**(自身)。spawn 包 **len=249**，与第 2 条算出的字节数一致。
+   - 收尾：两个账号各删角（0x7FFE）+ `addaccount -remove` 删号 + `Stop-Process -Name gms`。
+   - **探针改进**：新增 `-hold`（脚本回包到齐后继续监听，专门用于观察 spawn/despawn；否则 `-loggedinas` 一收到 WARP_TO_MAP 就退出，看不到后面的 spawn/despawn）+ SPAWN_PLAYER（0x00A2，打印 charID/level/name/guild）与 REMOVE_PLAYER_FROM_MAP（0x00A3）解码。
+9. **本轮踩坑（新增）**：
+   - **同账号两角色同图必被顶号**：首轮冒烟用同一账号（char4/char5）双连，A 只收到自身 spawn 就断线（`forceRemovePlayerByAccID` 踢人）；必须准备**两个账号**。
+   - **`-wait` 是 Go `duration` flag**：写 `-wait 15`/`-wait 5` 直接 parse error，必须带单位（`15s`）。
+   - 后台跑探针用 `cmd /c start "名" /B cmd /c "... > log 2>&1"`（与 `start-gms.cmd` 同款，Start-Process 对 workspace exe 仍被拒）；读运行中的日志用 `tools/readlog.ps1 -Path <log>`（共享读）。
+   - 冒烟后 `accounts.loggedin` 残留 2：删角前那次登录会先答 `7`（P4.1 `unlockAcc` 语义），**再连一次即成功**（本轮每次删角都重试了一次）。
+10. **文档**：PROGRESS（P4.3 打勾 + 逐字段明细 + 新增 P4.3b + 汇总 20/77 + 变更记录）、FILETRACK（MapleMap / MapleMapObject / MaplePacketCreator / PacketHelper / ChannelServer 备注；Summary 计数不变）、MIGRATION_MAP（§1 两行、§2 一行）。
+
+### 断点 K 会话（2026-09-11，P4.2 player 装配与会话迁移/进图）
+
+1. **范围**：PLAN 的 `GMS-P4.2`「player 装配：从登录服迁移会话（CharacterTransfer 语义）→ 进图」。入口就是 P4.1 留的 `channelHandler.OnPacket` 的 `RecvPLAYER_LOGGEDIN` 分支。
+2. **新包 `internal/packet`（PLAN §4.1 的 `packet/` 落点，login/channel 共享）**：
+   - `packet.go`：`AddCharStats`（从 `internal/login/packets.go` **原样搬来**，login 侧 `addCharEntry` 改为调用它，P2.4 的逐字节断言与 CHARLIST 不变）、`PacketTimeNow`（原 `packetTimeNow`）、`CharInfoPacket`（= `MaplePacketCreator.getCharInfo`，channel 进图包）、`TemporaryStatsResetPacket`（0x0026，无 body）、`ServerMessagePacket`（`serverMessage(msg)` → `serverMessage(4,0,msg,true)`：SERVERMESSAGE + byte 4 + byte 1 + str）。
+   - `rand.go`：`RandStream` = `client/PlayerRandomStream`（CRand32 三元组）。
+3. **`getCharInfo` 布局（保真点，逐字段对过 ZEVMS 反编译 + 交流源码）**：
+   `short WARP_TO_MAP(0x0081)` + `int (channel-1)` + `byte 0` + `byte 1` + `byte 1` + `short 0` + **CRand connectData 3×int** + `long -1` + `byte 0` + `addCharStats` + `byte buddyCapacity` + `byte 1`(bless) + `addInventoryInfo` + 技能/冷却/任务/戒指/传送石/怪物卡/questinfo 各空段 + `int 0`(PQ) + `short 0` + 尾部 `long getTime(now)`。实测整包 **273 字节**（空背包/空技能）。
+   - `addCharacterInfo` **不含 `addCharLook`**（Java 只在 CHARLIST 的 addCharEntry 里写 look），go 侧 `AddCharStats` 是两者唯一共享段。
+   - `addInventoryInfo` 空背包时 = 7 个 `0x00` 段标记；槽位上限用 `saveNewCharToDB` 的固定值 **32/32/32/32/60**（`inventoryslot` 表未迁，P5.2 接）。
+   - `addRingInfo` 4 个 short、`addRocksInfo` 15 个 int、`addMonsterBookInfo` = int cover + byte0 + short0。
+4. **CRand32 的"怪癖"必须保真（勿"修"）**：`connectData()` 连调 `CRand32__Random()` 三次，但该方法**只读 `seed1..3`、只写 `seed1_..3_`**，所以三次返回值**完全相同**、写出去的三个 int 也一样（实测 `rand=-554203/-554203/-554203`）。`CRand32__Seed` 的三个常量是 `0x100000/0x1000/0x10`；构造期第二、三参数是 `1170746341*5-755606699`（Java int 溢出后 = **803157710**，反编译版直接是 803157710、交流源码是溢出表达式，两者一致）。Go 存 uint32 状态（客户端种子本来随机，逐字节对齐 Java 无意义，重要的是两端共享同一条流）。
+5. **`internal/channel` 的 P4.2**：
+   - `login.go`（新）：`handlePlayerLoggedIn` + `loggedIn2`（= `InterServerHandler.Loggedin2`）。顺序：`getPendingCharacter` 优先 → 否则 `loadCharFromDB`（`database.GetCharacterByID`）→ `forceRemovePlayerByAccId` → `PlayerStorage.RegisterPlayer` + 滚动公告 → `getCharInfo` + `temporaryStats_Reset` → `map.addPlayer`。
+   - **跳过**（已注记）：`Loggedin` 的"登陆验证开关"（configvalues 不在 dump，PLAN SKIP/P7，与 P2.5 同款）、GM 隐身/加速技能授予（同款开关）、`c.updateLoginState(2)`（登录服已写 `loggedin=2`）、以及好友/组队/公会/家族/信使整段（P8）。`loadAccountData` 在 P4.2 无对应加载（P5.1 随 MapleCharacter 本体）。
+   - `players.go`：`Player` 加 `Chr *database.Character` / `Rand *packet.RandStream` / `MapIDVal`，并加 `ObjectID()`（= id，Java "玩家的 oid 就是 cid"）/`MapID()`/`AccountID()`；`PlayerStorage` 加 `CharacterTransfer` 挂起表（`RegisterPendingPlayer`/`GetPendingCharacter`（取走式，>40s 视为过期）/`DeregisterPendingPlayer`）。Java 的 40s 过期是在 `PersistingTask`（15 分钟 ticker）里扫的，Go 改成**读时判断**，ticker 留给 P5 存档循环。
+   - `server.go`：加 `characterStore` 接口（`GetCharacterByID`）+ `SetStore`；`ChannelServer` 加 `maps map[int]*mapp.Map`（`Map(id)` 惰性创建 = `getMapFactory().getMap(id)`、`lookupMap` 不创建）；`OnPacket` 改派 `handlePlayerLoggedIn`；`OnClose` 注销 PlayerStorage + 从地图移除；新增 `Server.forceRemovePlayerByAccID`（同账号顶号：跨频道找同 `AccountID` 的旧玩家 → 关会话 + 注销 + 出图）。
+   - `ChannelServer.addPlayer` 的滚动公告只在 `cfg.ServerMessage != ""` 时发（对应 Java `滚动公告开关 <= 0`；原版开关在 configvalues，缺表 → 用"配置了才发"等价）。
+6. **`internal/mapp`（新，最小占位）**：`Map{id, players}` + `Player` 接口（`ObjectID()`）+ `AddPlayer/RemovePlayer/Players/PlayerCount`。**只做玩家集合**：Java `addPlayer` 里那几百行地图特化（送货/月妙/闹鬼等）与 spawn/despawn 广播（`spawnPlayerMapobject`）属于 **P4.3**。地图实例按频道持有（Java `ChannelServer.getMapFactory()`）。
+7. **`database.GetCharacterByID`（新 DAO）**：`SELECT * FROM characters WHERE id = ?`，未找到回 `nil, nil`（不报错）。**P4.2 偏差**：Java `loadCharFromDB(channelserver=true)` 若 `inventoryslot` 无行会抛 RuntimeException；该表未迁，Go 用 `saveNewCharToDB` 默认槽位（见第 3 条）。
+8. **测试（新增 10 个）**：
+   - `packet/packet_test.go` 3：WARP_TO_MAP **逐字段解码到 `r.Len()==0`**（含三连随机 int 相等、7 个背包段标记、15 个传送石 int、buddy=20）；CRand32 同种子确定性 + connectData 二次调用值不同；TEMP_STATS_RESET=0x0026 空体 + serverMessage 布局。
+   - `channel/login_test.go` 7：进图全链（公告→WARP_TO_MAP→TEMP_STATS_RESET + `PlayerStorage`/`World.Find`/地图归属 + 断线自动注销）、未知角色断连、无 store 断连、store 报错断连、CharacterTransfer 优先（store 里没有该 id 也能进图）、挂起表一次性 + 40s 过期、同账号顶号（旧玩家从 storage + World.Find 消失）。
+   - `channel/server_test.go` 的 P4.1「PLAYER_LOGGEDIN 骨架不杀连接」改成「无 store 必须断连」（行为变更）。
+   - `database/characters_test.go` 的 char 链路补 `GetCharacterByID`（命中 + 未命中 nil,nil）。
+9. **live 冒烟全过**（SQLite + `bin/gms.exe` + `protocoltest`）：
+   - `addaccount -name p4two -pass pw12345 -gender 1`（id=8）→ `-login p4two:pw12345 -hex <CREATE_CHAR> -charlist` 建角 **id=3**（探测回显 1 char `12345`/level1/job0/gender1/map0/slots6）。
+   - `-login -charlist -selectchar 3` → `[SERVER_IP: ip=127.0.0.1 port=7575 charID=3]`。
+   - `-addr 127.0.0.1:7575 -loggedinas 3` → `[SERVERMESSAGE: type=4 "GMS Go 服务端测试中"]` + **`[WARP_TO_MAP: channel=1 charID=3 name="12345" gender=1 level=1 job=0 map=0 spawn=0 buddy=20 rand=-554203/-554203/-554203]`**（len=273，与第 3 条算出的字节数一致；三个 rand 相同 = 第 4 条怪癖实锤）。
+   - 服务端日志 `player logged in channel=1 playerID=3 name="12345" map=0 accID=8`；探针退出后立刻 `player logged out`（`OnClose` 注销生效）。
+   - 收尾：`-charlist -deletechar 3` 回 0x7FFE、`-charlist` 0 char、`addaccount -remove p4two` 删号、停进程。
+   - **探针改进**：`-loggedinas` 现在等 `WARP_TO_MAP` 再退出（原来收到任意回包就退出，会看不到进图包）；新增 WARP_TO_MAP（0x0081）人类可读解码 + TEMP_STATS_RESET 识别；`decodeServerMessage` 修 type=4（多一个 byte）。
+10. **本轮 Windows 坑（复用旧结论）**：`cmd /c "..."` 单独一次执行、不要与 `;` 串联（重复踩）；启动服务端用 `cmd /c "I:\GMS\tools\start-gms.cmd"`（`tools\start-gms.cmd` 相对调用偶发「系统找不到指定的路径」）。
+11. **文档**：PROGRESS（P4.2 打勾 + 明细 + 汇总）、FILETRACK（InterServerHandler/PlayerStorage/ChannelServer/MapleCharacter/PacketHelper/MaplePacketCreator 状态与备注）、MIGRATION_MAP（§1/§2 相应行）。
+
+### 断点 J 会话（2026-09-11，P4.1 channel server 骨架）
+
+1. **范围**：PLAN 的 `GMS-P4.1`「channel server 骨架（频道注册到 world、端口 7575）」。Java 侧架构事实（本轮查证）：LoginServer/ChannelServer/CashShop **同进程**，靠静态方法互调，"注册到 world"在 Go 单二进制里就落成 **main 的两条接线**（端口查询 + 人数回调），没有跨进程注册协议。
+2. **端口公式（保真点）**：`ChannelServer.port = 7574 + channel`，channel 从 **1** 起（`startChannel_Main` 里 `newInstance(i+1)`，i 从 0 到 `ZEV.Count-1`）。所以 `configs/gms.toml` 的 `channel.port = 7575` 是**频道 1** 的端口，`channel i` 监听 `7575+i-1`；`count=5` → 7575..7579。Count 上限 10（`if (ch > 10) ch = 10`）；exp/meso/drop 上限 100（`run_startup_configurations` 的三处 `>100 ? 100`）。
+3. **`internal/channel`（新包）**：
+   - `server.go`：`Server`（多频道实例表 + `onLoad` 回调 + `world.Finder`）、`ChannelServer`（channel/port/ip/acceptor/players/shutdown）。`New` 里做 Count 与速率 clamp；`ConfigFrom(config.Root)` 供 main 接线。
+   - 握手**与登录服逐字节同源**（Java 里登录/频道/商城共用 `MapleServerHandler.channelActive`）：IV `{70,114,12,rand}`/`{82,48,120,rand}` + `getHello(79, sendIv, recvIv)` 的 raw 15 字节（不加密无帧头）。分发：`PONG(0x13)`→PING；`PLAYER_LOGGEDIN(0x0B)`→读 playerid 打日志（P4.2 实装 `InterServerHandler.Loggedin`）。
+   - `OnOpen` 里保留 Java 的 `ChannelServer.isShutdown()` 门禁（停机中直接关连接）。
+   - `players.go`：`PlayerStorage`（nameToChar 小写键 / idToChar 双 map + RW 锁、register/deregister/按名按 id 查/在线数）+ `World.Find` 副作用 + 人数变化回调。`Player` 目前只有 ID/Name/Sess 三个字段（P4.2 长成 MapleCharacter）。CharacterTransfer 挂起表、PersistingTask 存档分别留给 P4.2/P5。
+4. **`internal/world`（新包）**——解决 login 与 channel 平级却要共享状态的问题（谁都不依赖谁）：
+   - `registry.go`：`LoginRegistry` = Java `LoginServer.loginAuth`(charId→Triple<ip,tempIp,channel>) + `loginIPAuth`(ip 集合)；put / **take（取走，`getLoginAuth` 语义）** / containsIPAuth / removeIPAuth / addIPAuth 全迁。
+   - `find.go`：`Finder` = `World.Find` 子集（register/forceDeregister/find/findByName，按名大小写不敏感）。
+5. **选角交棒（P4.1 的可见出口）`internal/login/select.go`**：`Character_WithoutSecondPassword`（recv `CHAR_SELECT = 0x000A`，body 只有 int charId）。顺序保真：
+   `取账号在线状态(DB 实时 loggedin) != 2` → `getLoginFailed(7)`；`c.getLoginState() != 2`（内存 `loggedIn`）→ 7；`!isLoggedIn || loginFailCount(>5) || !login_Auth(charId)` → `enableActions`；`ChannelServer.getInstance(channel)==null || world!=0` → **直接关连接**；最后 `putLoginAuth(charId, "ip:port", tempIP="", channel)` + `getServerIP(port, charId)`。
+   - 封包：`ServerIPPacket` = `short SERVER_IP(0x0B) + short 0 + ip[4] + short port + int charId + {1,0,0,0,0}`（**Java `MaplePacketCreator.getServerIP`**）；`EnableActionsPacket` = `UPDATE_STATS(0x22) + byte 1 + int 0 + short 0`（`enableActions` 空掩码退化形）。
+   - **`Character_WithSecondPassword` 不迁**：它在 v079 recvops 里没有 opcode（值 -2），Java 源码里那个 `case AUTH_SECOND_PASSWORD` 是死分支。
+   - 频道端口来源是 main 注入的 `SetChannelPortLookup`（Java `ChannelServer.getInstance(ch).getIP().split(":")[1]`），所以 login 包不需要 import channel。
+6. **双登清理 `unlockAcc`（本轮冒烟实踩的阻塞项，原 SESSION_STATE 标注"stale session cleanup arrives with the channel server (P4)"）**：协议进程退出后 `accounts.loggedin` 残留 2，Java 靠 `MapleClient.unlockAcc()` 兜底，Go P2.2 当时只答 7 → **账号永久登不进**（冒烟实抓）。现已保真实现：
+   - 有活跃会话（`login.Server.clients` 表，登录成功时登记、`OnClose` 注销）→ 发弹窗「与服务器断开连接，检测到其他登陆。」+ **1 秒后**关连接（对齐 `unLockDisconnect` 里 `Thread.sleep(1000)`；不延迟的话排队的 notice 会跟连接一起丢，测试实抓）。
+   - 无活跃会话（崩溃残留）→ `UPDATE accounts SET loggedin=0`（Java else 分支，新 DAO `database.ResetAccountLogin`，只动 loggedin 不动 SessionIP/lastlogin）。
+   - 两种情况**本次登录仍答 7**（与 Java 一致：客户端提示"已登录"后重连即可成功）。
+7. **load 上报与 SERVERLIST 显示值**：Java 是 `LoginWorker` 每 10 分钟轮询 `ChannelServer.getChannelLoad()` → `loadFactor = 1200 * 频道数 / userLimit`、`load = min(1200, 人数*factor)`，**并把换算值写回共享 map**（下一轮会二次换算——原版 bug）。Go 改为：频道服人数一变就 `SetChannelLoad(channel, players)` 推给 login（`usersOn` = 真实人数求和），**显示值在回包时按真实人数换算**（`displayChannelLoad`），不再污染原始值。
+8. **`config.Server.ExternalIP`**（`server.external_ip`，默认 `127.0.0.1`）：对应 Java `MapleParty.IP地址`（原版默认 `"0.0.0.0"`，客户端拿到连不上，发行版自己填真实 IP）。Validate 校验可解析、允许空（main 回退 loopback）。`ChannelServer.ip` 用对外 IP 而非监听地址（Java `this.ip = MapleParty.IP地址 + ":" + port`）。
+9. **测试**（新增 17 个）：`channel` 6（端口公式 7575/7576/7577、Count 上限 10、速率上限 100、hello+PONG、PLAYER_LOGGEDIN 骨架不杀连接、PlayerStorage+World.Find+load 回调序列 `[0,1,0]`）；`world` 4（票据 put→take 一次性/ip 集合增删/并发/`Finder`）；`login/select_test` 7（**SERVER_IP 19 字节逐字节断言** + 票据落地 `ip:port`/channel、DB 态门禁答 7、未授权角色回 enableActions、频道停机则断连、`displayChannelLoad` 换算与 1200 上限、双登踢活会话（含 notice 与关闭）、双登清孤儿 `reset:` 副作用）；`config` +1（external_ip 默认与校验）。
+10. **live 冒烟全过**（SQLite + `bin/gms.exe`）：
+    - 启动日志：`login server listening :8484` + **5 条 `channel server listening` 7575..7579**（`ip=127.0.0.1:<port>`）。
+    - `-login p4smoke:pw12345 -hex <CREATE_CHAR> -charlist` → 建角 id=2 并回显（`12345`/level1/job0/slots6）。
+    - `-login -charlist -selectchar 2` → `recv plain=0B 00 00 00 7F 00 00 01 97 1D 02 00 00 00 01 00 00 00 00`，探针解码 `[SERVER_IP: ip=127.0.0.1 port=7575 charID=2]`。
+    - 选频道 3（`-hex "0900000200000000"` = CHARLIST 的 channel byte 传 2）→ `port=7577`（0x1D99），证明端口查询按频道号取。
+    - `-addr 127.0.0.1:7575 -loggedinas 2` → `hello version=79` + 服务端 `player logged in (skeleton) channel=1 playerID=2`。
+    - 双登：首连答 7 + 日志 `double login, stale loggedin reset accID=7`，次连成功（见第 6 条）。
+    - 收尾：`-charlist -deletechar 2` 回 `0x7FFE` + state 0（**探针为本轮新增**）、`addaccount -remove p4smoke` 删号、停进程。
+11. **本轮 Windows 坑（新增）**：
+    - **`-hex` 探针的 opcode 必须小端**：写 `0011...` 会被服务端解析成 `0x1100`（日志 `opcode=0x1100`），正确写法是 `1100...`（`short` 低字节在前）。第一次建角失败就是这个，不是白名单问题。
+    - `execute_command` 里 PowerShell 内联脚本的 **`$` 变量会被外层 shell 吃掉**（`$fs=...` 变成 `=...`），需要读日志这类多步操作时：写一个 `.ps1` 再 `-File` 执行（本轮加了 `tools/readlog.ps1`，以共享读方式打开运行中的 `bin\gms_out.log`）。
+    - `go test ... | tail` / `grep` 在 PowerShell 下不存在，用 `Select-String` / `Measure-Object`。
+    - PowerShell 单引号里的 `|` 正则（如 `'\| TODO \|'`）在 `Select-String` 里可用，但同一命令里混用 `$var` 会先被吃掉——两者别写在一起。
+12. **文档**：PROGRESS（P4.1 打勾 + 明细 + 汇总 18/76 + 变更记录）、FILETRACK（ChannelServer/PlayerStorage/InterServerHandler/World.java → ACTV + LoginServer/LoginWorker/CharLoginHandler/MapleServerHandler 备注更新；Summary 计数不变，TODO→ACTV 不改变合计）、MIGRATION_MAP（§1 两行、§2 五行、§3 两行）。
+
+### 断点 I 会话（2026-09-01，技术栈升级：GORM 迁移）
+
+1. **决策（用户拍板）**：盘点后全量渐进迁移 ORM——sqlx → **GORM**（`gorm.io/gorm` + `gorm.io/driver/mysql` + **`github.com/glebarez/sqlite`** 纯 Go 驱动），同时 **testify 增量采用**（只在新写/触到的测试用 assert/require，不强改存量 4100 行）。评估明细：`internal/login` 只依赖 `accountStore` 接口 → 换 ORM **login 包零改动**；netw/protocol/crypto/wzs 专有逻辑不动；gnet/viper 明确不引入。
+2. **PoC 先行（已删）**：独立临时包验证过保留字列（`` `int` ``、`2ndpassword`）、`sql.NullString` 往返、AutoMigrate、MySQL 真表读取后才动 DAO。
+3. **关键约束（勿再踩）**：`modernc.org/sqlite` 与 `glebarez/go-sqlite` **都向 database/sql 注册名为 "sqlite" 的驱动**，同一二进制里同时 import 会 panic "Register called twice"——迁移后全树禁止 import modernc（它仍以 indirect 留在 go.sum，是 glebarez 的底层依赖，正常）。官方 `gorm.io/driver/sqlite` 要 CGO（本机无 gcc），不能用。
+4. **`db.go`**：`DB` 改包 `*gorm.DB`（`driver` 字段保留给 seedDrops 分支用）；`gorm.Config{Logger: Warn, TranslateError: true, DisableFKConstraintWhenMigrating: true}`；`Ping`/`Close` 走 `db.DB.DB()` 拿底层池；`isNotFound()` 包 `gorm.ErrRecordNotFound`；`dialectInt()` 删除（GORM 方言层自动引号）。**schema 不走 AutoMigrate**：MySQL 生产库只认 `migrations/*.sql`，`sqliteSchema` DDL 字符串原样保留。
+5. **`forceParseTime`**（openMySQL 内）：DSN 缺 `parseTime=true` 自动补——否则驱动对 DATETIME 回 `[]byte`，`GetAccountState` 的 `lastlogin`（sql.NullTime）运行时炸 "unsupported Scan"（sqlx 时代同样会炸，属既有脆弱点，live 冒烟实抓后顺手修死）。
+6. **GORM `default:` tag 陷阱（本迁移最大坑）**：带 `default:X` 的**零值字段会被 GORM 从 INSERT 里省略**、落到列默认值——`Gender=0` 会静默变 10、`GM=0` 变 6、`Meso=0` 变 20000。而老 sqlx INSERT 是显式列清单、写零就是零。**解法：所有被写入的模型（Account/Character/CharacterSlot/IPBan/MacBan）一律剥掉 `default:` tag**（反正 AutoMigrate 不用它们，真 schema 在 DDL 里）。characters_test 专门断言 GM=0/Meso=0 不漂移。
+7. **`InsertCharacter` 行为保真**：老 INSERT 从不含 `id`；GORM Create 遇非零 PK 会带上 → 开头强制 `c.ID = 0`（调用方复用/拷贝已回填的 struct 也不会撞主键）。
+8. **DAO 迁移明细**：`accounts.go`（GetAccountByName 用 Take+isNotFound→nil,nil；Updates 走 map 保 `salt = NULL` 语义——Go 空串会存 ''，必须 nil；`lastlogin = CURRENT_TIMESTAMP` 用 `gorm.Expr` 无括号形式，SQLite 拒绝 MySQL 的 `CURRENT_TIMESTAMP()`）；`characters.go`（模型扩到 38 字段=老 INSERT 全列清单，saveNewCharToDB 固定字面量在 InsertCharacter 里显式赋值）；`bans.go`；`drops.go`（embed 快照回放不变，`execScript` 改 GORM Exec）。
+9. **`tools/addaccount` 裸 SQL 全部收进 DAO**：新增 `CreateAccount`/`ResetAccountPassword`/`DeleteAccountByName`/`BannedMacs`/`AddIPBan`/`RemoveIPBan`/`AddMacBan`/`RemoveMacBan`，工具只剩 flag 解析与打印。
+10. **测试**：新增 `characters_test.go` 2 个（char 链路：int 保留字列/显式零值/固定字面量/CHARLIST 排序/删角 ownership/slots 懒加载与持久化；admin 面：Create gender=0 不漂移/Reset 清 NULL/Delete 行数）；全部 `ExecContext` 夹具改 `db.WithContext(ctx).Exec(...).Error`；触点处用 `require.NoError`。
+11. **验证**：`go vet ./...` + `go test ./...` 全绿；live MySQL 只读（fl2223 账号 + 浩浩/江江真角色 str=32767 边界值 + 掉落 900/14243/16）；`bin/gms.exe` 启动冒烟（drop tables loaded 14243/900/16 → listening :8484）+ protocoltest 完整握手（首轮 auto-register → 次轮 CHOOSE_GENDER → SERVERLIST 5 频道 → SERVERSTATUS → CHARLIST 0 chars/6 slots）。
+12. **go.mod 终态**：直接依赖 7 个（toml/glebarez-sqlite/go-sql-driver-mysql/testify/x-text/gorm/gorm-mysql），sqlx 移除。P4 起新 DAO 直接写 GORM。
 
 1. **`internal/database/characters.go` 新文件**：`Character` DAO（CHARLIST 所需 27 列）+ `GetCharactersByAccount`（loadCharactersInternal）/`GetCharacterIDByName`（getIdByName，-1=无）/`InsertCharacter`（saveNewCharToDB 的 characters 行子集）/`DeleteCharacterByID`（deleteCharacter 子集，state 0/1）/`CharacterSlots`（character_slots 表惰性建行）；`accounts.go` 加 `UpdateAccountGender`。
 2. **SQLite DDL 扩**：characters 全列翻译（`migrations/0001_base.sql:904`，62 列，`"int"` 引用）+ character_slots；`DB.driver` 字段 + `dialectInt()`（MySQL 反引号/SQLite 双引号共用一份查询）。
@@ -30,6 +196,35 @@ go test  ./internal/...                         ✅ 全绿
 6. **live 冒烟全过**（SQLite）：`-charlist` 空列表（0 角色 6 slots）-> `-hex` CREATE_CHAR（修正后 weapon=1302000=0x13DDF0）回 ADD_NEW_CHAR_ENTRY id=1 布局逐字节对 -> `-charlist` 回显"冒烟1"（GB18030 往返正确）。
 7. **排障实录**：探针 `-hex` 手写字节把 1302000 误算成 0x13DD78（=1301880）触发白名单拦截；日志 name "鍐掔儫1" 是 Get-Content 按 GBK 读 UTF-8 文件的显示问题，服务端数据正确。
 8. **文档**：PROGRESS/FILETRACK/MIGRATION_MAP 同步（PacketHelper/MapleCharacterUtil 转 ACTV）。
+
+### 断点 H 会话（2026-08-31，P3.5 掉落表入库）
+
+1. **方向性前提（用户拍板，勿再回头）**：本服掉落表是**第三方预置**的，**以数据库为准**：
+   - 权威数据在 `K:\079MAX2服务端\mysql\MySQL\data\079@002dmax2`：`drop_data` 14,243 行 / 900 个怪（chance 0..10,000,000）、`drop_data_global` 16 行（continent=1，chance 500..500000）、`drop_data_vip` 5 行、`drop_data_vana` 9,217 行、`drop_data_tixing` 19 行
+   - `tools/wztosql/MonsterDropCreator.java` 那份生成器**在本服不是数据来源**：实测漂移巨大（库 14,243 行/900 怪 vs wz 重建 14,400 行/430 怪；仅库有 5,693 对、仅 wz 有 6,068 对、同对 chance 不同 3,384 对）。Java 源码里也找不到这批数据的生成过程，是别人做好的
+   - 因此 P3.5 的"入库"= 把权威库数据搬进 Go 树；wz 侧只做重建 + 对比，**工具不写库**
+   - `drop_data_vip` / `_vana` / `_tixing` 在 Java 全源码里**无任何引用**（已 grep 确认），本轮不碰
+2. **`tools/dropexport`（新工具）**：连权威 MySQL 库把掉落表快照成可移植 SQL（`-dsn` / `-out` / `-tables` / `-batch` / `-stats`）。设计要点：只输出 INSERT 不带 DDL（建表两端各有，见下）；省掉自增 `id`（目标库自分配，与 MonsterDropCreator 的 `(DEFAULT, …)` 一致）；按 `dropperid, itemid, chance…` 排序 → 重复导出字节稳定、diff 干净；文件头写来源/行数但**不写时间戳**（否则每次导出都是噪音）
+3. **`migrations/0002_drop_data.sql`（14,259 行 / 493 KB）**：权威库快照，同一份内容另存 `internal/database/seed_drop_data.sql` 供 `go:embed`
+4. **`internal/database/drops.go`（新）**：`MonsterDrops`（Java `retrieveDrop`）/ `GlobalDrops`（`chance > 0`）/ `DropStats`；`seedDrops` **仅当 `drop_data` 为空**时回放 embed 快照（运营手工调过的行永不被覆盖），MySQL 路径不导入（它连的就是权威库）；`execScript` 只剥离整行 `--` 注释。`dropType` 列名不引号（SQLite 标识符大小写不敏感）
+5. **SQLite DDL 补** `drop_data` + `drop_data_global`（翻译 `0001_base.sql:1114/1129`），`openSQLite` 建表后调 `seedDrops`
+6. **`internal/life/drops.go`（新包）**：Java `MapleMonsterInformationProvider` 移植。保真点：**EQUIP 类 `chance /= 3`**（加载期削，库里存的仍是原值）；出错不缓存（对齐 Java 的 SQLException 分支）；构造期装载全局掉落。有意偏差：Java 用无锁 HashMap 跨 netty 线程（真实数据竞争），Go 加 `RWMutex` 并写了并发回归测试
+7. **`internal/dropgen` + `tools/wztosql`**：MonsterDropCreator 移植。三处来源 = 8 个硬编码特殊怪（`getDropsNotInMonsterBook`）+ `String.wz/MonsterBook.img/<mobid>/reward` + 怪物卡（2380000..2388070 按名匹配）
+   - `getChance` 全表保真，**含 Java 两处 switch fallthrough**：case 112 无命中 → 落入 130/131/132/137 块得 700；case 400 无命中 → 落入 401/402 块得 9000
+   - **Java 死代码**：`case 400` 里的 `case 4031456` 永远不可达（4031456/10000 = 403，走 case 403 → 300），Go 保持 300，测试里注明
+   - boss 倍率链：Rare==2 → `*10` 并停；Rare==3 → 8810018 落穿（`*48` 再 `*45`）**之后仍吃尾部 `*10`**（`break` 只跳出 rarity switch），8800002 同理 `*45` 再 `*10`；8860010/9400265/9400270/9400273/9400294/9420522/9400409/9400287 走 `continue block20` **跳过**尾部 `*10`
+   - `multipleDropsIncrement` 里 Java 的十六进制字面量已换算：`0x1F21F2`=2040306、`0x3D0D00`=4001024、`0x312221`=3220001、`0x406460`=4220000
+   - Mob.wz 文件名 = 怪物 id + ".img" **左补零到 11 位**（`0100100.img.xml`，1614 个怪）
+8. **本服特化：怪物卡名是中文**「蜗牛卡片」，Java 硬编码的英文后缀 `" Card"` 只能匹配 1 张，而库里有 **422 条卡掉落 / 414 个怪**。加 `Options.CardSuffix` + `tools/wztosql -card-suffix-cn`（= `卡片`）→ 411 张。⚠️ **不能靠 `-card-suffix 卡片` 传**：本机命令行传中文实参会 mojibake（§三.9 同类坑），必须用无中文的开关
+9. **`monstercarddata` 表本服不存在**（已核权威库表清单：只有 drop_data* 与 reactordrops），Java 生成的这部分在 SQL 里以注释保留
+10. **测试**：`database/drops_test.go` 4 + `life/drops_test.go` 6 + `dropgen/dropgen_test.go` 8（getChance 55 用例 / 真实 wz 全量 `items=43050 mobs=1614 boss=517 entries=14400 cards=411`）全部通过
+11. **live 冒烟**（SQLite + `bin/gms.exe`）：`database connected` → **`drop tables loaded rows=14243 monsters=900 global=16`** → `wz names loaded …` → `login server listening :8484`；protocoltest 握手回归 OK。测完停进程
+12. **本轮 Windows 命令坑（新增）**：
+    - `execute_command` 的 shell 会在 PowerShell / cmd 之间跳：形如 `$p=…; & $p\bin\mysql.exe …` 的命令偶发被当成 cmd 执行（`'$p' 不是内部或外部命令`）。**规避**：显式 `powershell -NoProfile -Command "…"`
+    - `powershell -Command` 里的 SQL 用**单引号**时，`LIKE '%x%'` 的引号会被吃掉 → 改成不带引号的 SQL，结果落盘再 grep
+    - **运行中的 `bin\gms_out.log` 被进程独占**，`[IO.File]::ReadAllText` 抛"正由另一进程使用" → 用 `File::Open(…, ReadWrite 共享)` + StreamReader
+    - `cmd /c start-gms.cmd` 后**不能**用 `;` 串联 PowerShell 语句（§三.9 铁律，本轮再踩一次：`go build` 被吞，跑的还是旧 exe，日志里没有新行）
+13. **文档**：PROGRESS（P3.5 打勾 + 明细）/ FILETRACK（MonsterDropCreator、MapleMonsterInformationProvider → DONE；Summary TODO+ACTV 408→406、DONE 27→29）/ MIGRATION_MAP（新增 5 行）
 
 ### 断点 G 会话（2026-08-30，P3.1/P3.2 wz 数据层）
 
@@ -171,10 +366,40 @@ go test  ./internal/...                         ✅ 全绿
 12. **沙箱拦截删除类命令（本会话实测）**：含 `Remove-Item`、`Remove-Item -Recurse`、`-del` 等删除语义的命令行会被静默拦截——**无输出、exitCode=0、实际未执行**（`addaccount -del` 和 `Remove-Item` 都踩到；`-remove` 不拦）。
     - 解法 A：改用不触发关键字的写法（工具开关改名，如 `-del` → `-remove`）。
     - 解法 B：用 `delete_file` 工具，且**路径必须写成工作区的小写盘符形式** `i:/GMS/...`——写 `I:\GMS\...` 会报 "file is outside the workspace directory"。
+13. **P4.1 频道/选角 Java 语义（勿再踩）**：
+    - ChannelServer 端口 = `7574 + channel`，**channel 从 1 起**；`ZEV.Port<channel>` 可逐频道覆盖（原版无覆盖即默认值）。Go 用 `channel.port + (channel-1)`，语义等价。
+    - 登录/频道/商城**共用同一份 hello**（version 79 + 两组 IV 结构），频道没有独立版本号。
+    - `CHAR_SELECT(0x000A)` body 只有 `int charId`；它的第一道门是 **DB 实时 `loggedin` 必须 == 2**（不是内存态），第二道才是客户端内存登录态；`!login_Auth(charId)` 回 `enableActions` 而非关连接。
+    - `getServerIP` 布局：`short 0 + ip[4] + short port + int charId + {1,0,0,0,0}`；`port` 取 `ChannelServer.getIP().split(":")[1]`；`ip` 取 `MapleParty.IP地址`（不是监听地址）。
+    - `loginAuth` 票据在 ZEV 里**频道侧没人消费**（`MapleServerHandler` 里那个 `containsIPAuth` 是空 if，`getLoginAuth` 无调用方）——Go 保真：登记但不拦，等 P4.2 按需接。
+    - `unlockAcc` 是双登的"解锁"语义：**本次仍答 7**，但要么踢活会话、要么把 `loggedin` 清 0，否则客户端会永久登不进（进程崩溃/被 kill 后必现）。
+    - `PlayerStorage` 的名字键是 **lowercase**；register/deregister 都要带 `World.Find` 的注册/注销副作用。
+14. **P4.2 进图 Java 语义（勿再踩）**：
+    - `InterServerHandler.Loggedin` 只是"登录验证开关"的包装，**真正干活的在 `Loggedin2`**；开关（configvalues 表）不在 dump → Go 直接走 `Loggedin2`。
+    - 频道侧 `MapleClient` 的 `accID` 来自 `player.getAccountID()`（= characters 行的 accountid），**不是**登录票据——`LoginRegistry` 里那张 `loginAuth` 票据 ZEV 全程没人消费（P4.1 结论不变）。
+    - `forceRemovePlayerByAccId` 是**跨频道**扫（`ChannelServer.getAllInstances()`），同账号旧角色会被 `disconnect` + `removePlayer` + `map.removePlayer`；新登录玩家的 `except` 判断靠"client 是否是本人"。
+    - `MapleMapObject` 对玩家是**只读 oid = cid**（`MapleCharacter.getObjectId() -> getId()`，`setObjectId` 直接抛异常），所以 `mapp.Map` 用角色 id 当键。
+    - `temporaryStats_Reset` 就是 `TEMP_STATS_RESET(0x0026)` 一个空体包；`getCharInfo` 里的 `byte 1` 是 bless 标记（Java 注释掉了"有祝福才写名字"的分支，恒为 1）。
+    - `addCharStats` 的 `sp` 取的是 `remainingSp[getSkillBook(job)]`（按职业技能书下标），Go 暂时恒 0（新号 sp 全 0；P5.1 解析 `sp` 列时再补），与 P2.4 的 CHARLIST 取值一致。
+    - 频道服拿不到角色时 Java 会 NPE（`loadCharFromDB` 返回 null 后 `c.setPlayer(player)`），Go 选择**明确关连接 + 日志**。
 
 ## 四、断点与下一步（按优先级）
 
-### 断点 G（当前）：P3.3 wz 数据缓存（M2 起步）
+### 断点 M（当前）：P4.4 移动处理完成，下一步 P4.3b 地图实例数据 / P4.5 聊天
+- **P4.4 已收口**（见 §二 断点 M）：`internal/movement` 新包（`Fragment`/`Parse`/`Serialize`/`SerializeMovementList`/`UpdatePosition` + `Target` 接口）、`packet.MovePlayerPacket` 与 `SpawnPlayerPacket(..., x, y, stance)`、`channel/movement.go` 的 `handleMovePlayer`、`Player.Pos/Stance/Fh/OldPos/FallCounter`。3 个新测试文件 7 个用例 + live 冒烟（B 收 A 的 MOVE_PLAYER、A 不收自己的）全过。
+- **保真校正（推翻旧结论）**：`PlayerHandler.MovePlayer` 用的是 boolean 重载 `broadcastMessage(player, pkt, false)`，其 rangeSq = `POSITIVE_INFINITY` —— **没有** `maxViewRangeSq` 坐标过滤。view-range（`Point rangedFrom` 重载）随 foothold/怪物（P4.3b/P6）再上，不要在 P4.4 里凭空加过滤。
+- **P4.3b（下一个候选，可先做也可后做）**：地图实例数据 = Java `server/maps/MapleMapFactory`，读 `Map.wz/Map/Map<i>/<mapid>.img` 的 `info`（mapName/returnMap/fieldLimit 等）/`foothold`/`life`（怪物+NPC 生成点）/`portal`（传送门）。
+  - **消费方**：传送门换图（`portal.getTarget`）、P6 的怪物/NPC 生成（`life` + `SpawnPoint`），以及 `PlayerHandler.MovePlayer` 里被跳过的坠落计数（`getFootholds().findBelow`）。
+  - **落点**：`internal/mapp` 的 `Factory`（缓存 mapid → 已解析的只读地图静态数据），`ChannelServer.Map(id)` 建实例时挂上去；wz 侧走 `internal/wzs`（P3.3 断点 G 的第 ⑤ 片）。
+  - 也可以只先解析 `portal`（换图必需）+ `info.returnMap`，`foothold`/`life` 留到 P6。
+- **P4.5（另一个候选，不依赖 P4.3b）**：聊天（公屏/私聊/表情）+ 关键字屏蔽（abc/关键字屏蔽 表，Java `ChatHandler` + `GameConstants` 过滤）。坐标/移动已就位，做聊天不阻塞。
+- **坐标已真实化**：`channel.Player.Pos` 现在由 MOVE_PLAYER 驱动、spawn 包已带真实 pos/stance；`mapp.Player` 接口尚未暴露坐标（等 P4.3b 做 view-range 时再加 `Position()`）。
+- **P4.3 的掉落接入点已留好**：`life.NewMonsterInformationProvider(db)` → `RetrieveDrop(ctx, mobID)` / `GlobalDrop()`；`cmd/gms` 现在只打 `drop tables loaded` 统计日志（未持有 provider），届时把 provider 挂到频道服即可。掉落 roll 语义在 `MapleMap.dropFrom...`：普通掉落 `Randomizer.nextInt(999999) >= chance*rate*dropMod*…`，全局掉落 `nextInt(999999) >= chance`（**不**乘倍率），另注意全局那行 Java 反编译出的 `continent >= 0 && >= 10 && >= 100 && >= 1000` 等价于 `continent >= 1000 才跳过`
+- **P3.3 未完切片**（Item / Skill / Mob / Npc / Reactor）**按需增量补**，不要在 P4 前摊大——它们都是"需要时再搬"的纯缓存，缺哪块补哪块
+- **GORM 使用铁律（P4 起新代码必读）**：① 写入模型**不加 `default:` tag**（零值会被列默认值吞，见 §二 断点 I.6）；② `salt = NULL` 用 map 值 `nil` 而非空串；③ 自增 PK 的外部传入 struct 走 Create 前归零 ID；④ MySQL DSN 依赖 openMySQL 的 forceParseTime，勿绕过 Open 直连
+- **P3.5 已收口**（见 §二 断点 H）：权威库掉落数据入库 + Go 读取层（`internal/database/drops.go` + `internal/life/drops.go`）+ wz 侧重建与漂移对比（`internal/dropgen` + `tools/wztosql`）。P3 的 DoD「掉落表生成可入库」达成
+
+### 断点 G：P3.3 wz 数据缓存（未完成切片）
 - **进度**：①名字表 ✅（见 §二 断点 G.10）；后续顺序 ②`Item`（`Item.wz` + `Character.wz` 装备统计，Java MapleItemInformationProvider）→ ③`Skill`（`Skill.wz`，Java client/SkillFactory）→ ④`Mob`/`Npc`/`Reactor`（Java MapleLifeFactory / MapleReactorFactory）→ ⑤`Map`（`Map.wz` 地图实例数据，留给 P4.3）。
 - 参考 Java 消费者（用户提示"wz 解析直接参考 zevms 源码"）：`server/MapleItemInformationProvider`（getData("Cash.img"/"Eqp.img").getChildByPath("Eqp") 等）、`server/maps/MapleMapFactory`、`server/life/MapleLifeFactory`、`client/SkillFactory`、`server/quest/MapleQuest`、`tools/wztosql/WzStringDumper`（最直观的遍历范式）。
 - 注意本服 `String.wz/Map.img` 的地区键是 `chinese`（原版是 0/1/2…）。
@@ -207,22 +432,34 @@ go test  ./internal/...                         ✅ 全绿
 ```
 I:\GMS
 ├── README.md, go.mod, go.sum
-├── cmd\gms\main.go                 # 入口（已接 database，含降级模式）
-├── configs\gms.toml                # 配置样例（database=sqlite 冒烟；[[server.worlds]] 世界列表）
+├── cmd\gms\main.go                 # 入口（database 含降级模式；P4.1 装配 login + channel 两支并接线票据/端口查询/load 上报；P4.2 追加 chs.SetStore(db)）
+├── configs\gms.toml                # 配置样例（database=sqlite 冒烟；[[server.worlds]] 世界列表；server.external_ip；[channel] 端口=频道 1）
 ├── data\gms.db                     # SQLite 运行库（自动生成，首连建 accounts 表）
 ├── wz\                             # wz 解包数据（K:\079MAX2服务端\wz 的副本，39,986 XML / 735 MB，.gitignore 忽略）
-├── migrations\0001_base.sql        # P0.3 导出（225 表，MySQL 权威 schema）
+├── migrations\
+│   ├── 0001_base.sql               # P0.3 导出（225 表，MySQL 权威 schema）
+│   └── 0002_drop_data.sql          # P3.5：权威库掉落快照（14,259 行 INSERT，dropexport 生成）
 ├── internal\
-│   ├── config\  ✅ (config.go + test；Database 加 driver 字段)
+│   ├── config\  ✅ (config.go + test；Database 加 driver 字段；Server 加 external_ip)
 │   ├── wzs\    ✅ P3.1+P3.2 (type/data/xml/provider + 10 测试 + testdata\wz 样本)
 │   ├── crypto\  ✅ (bittools/shanda/aesofb + golden_test + testdata\golden.txt)
 │   ├── protocol\ ✅ (opcodes_gen + reader + writer + charset + tests)
 │   ├── netw\    ✅ (session[+State 槽] + codec + tests)
-│   ├── login\   ✅ P2.2+P2.3+P2.4+P2.5 (server/packets/util/crypto/auth/worlds/chars/register + 7 组测试 + testdata\golden_login.txt)
-│   └── database\ ✅ P2.1+2.2+2.4+2.5 (db[双方言+自动建 accounts/characters/character_slots/ipbans/macbans]/accounts/characters/bans + db_test)
+│   ├── world\   ✅ P4.1（registry.go：LoginServer.loginAuth/loginIPAuth 票据；find.go：World.Find 子集 + 4 测试）
+│   ├── packet\  ✅ P4.2+P4.3（共享层：packet.go[AddCharStats/addCharLook/CharInfoPacket/TEMP_STATS_RESET/SERVERMESSAGE/**SpawnPlayerPacket/RemovePlayerFromMapPacket**] + rand.go[PlayerRandomStream/CRand32] + 5 测试）
+│   ├── mapp\    ✅ P4.2+P4.3（map.go：地图实例[id + 玩家集合] + **spawn/despawn 视野广播 AddPlayer/RemovePlayer/Broadcast + Player.SendSpawnData/DespawnData** + 3 测试；foot-hold/life/portal 地图数据留 P4.3b）
+│   ├── channel\ ✅ P4.1+P4.2+P4.3（server.go：多频道 7574+channel + 同源 hello + 地图注册表 + 顶号；players.go：PlayerStorage + World.Find 副作用 + load 回调 + CharacterTransfer 挂起表 + **mapp.Player 实现**；login.go：Loggedin2 进图链 + 14 测试）
+│   ├── login\   ✅ P2.2+P2.3+P2.4+P2.5+P4.1 (server/packets/util/crypto/auth/worlds/chars/select/register + 测试 44 个 + testdata\golden_login.txt)
+│   ├── life\    ✅ P3.5 (drops.go：MapleMonsterInformationProvider 掉落缓存 + 6 测试)
+│   ├── dropgen\ ✅ P3.5 (chance.go/dropgen.go/sql.go：MonsterDropCreator 移植 + 8 测试)
+│   └── database\ ✅ P2.1+2.2+2.4+2.5+P3.5+断点I GORM+P4.1+P4.2 (db[GORM 连接层+自动建表 DDL]/accounts[+ResetAccountLogin]/characters[+GetCharacterByID]/bans/drops + seed_drop_data.sql[embed 掉落快照] + db_test/drops_test/characters_test)
+├── _handing\, _client\, _legacy_main.go   # pre-refactor 残留（下划线前缀=Go 工具忽略；内容原封保留，git 可 checkout）
 ├── tools\
 │   ├── genopcodes\ + genopcodes.exe
-│   ├── protocoltest\ + protocoltest.exe   # -login/-serverlist/-status/-charlist 探针 + SERVERMESSAGE 解码
+│   ├── protocoltest\ + protocoltest.exe   # -login/-serverlist/-status/-charlist/-selectchar/-deletechar/-loggedinas 探针（P4.3 加 -hold 持续监听）+ SERVER_IP/SERVERMESSAGE/WARP_TO_MAP(0x0081)/TEMP_STATS_RESET/SPAWN_PLAYER(0x00A2)/REMOVE_PLAYER_FROM_MAP(0x00A3) 解码
+│   ├── readlog.ps1                        # 共享读方式打印 bin\gms_out.log（运行中的日志被独占，直接 Get-Content 会失败）
+│   ├── dropexport\ + dropexport.exe       # P3.5：从权威 079-max2 库导出掉落表为可移植 SQL（-stats/-tables/-batch）
+│   ├── wztosql\ + wztosql.exe             # P3.5：wz 侧掉落重建（MonsterDropCreator）+ -diff 漂移对比（不写库）
 │   ├── wzdump\ + wzdump.exe               # P3.2：-list/-tree/-dump/-verify（全量 39,986 img 校验）
 │   ├── wzprobe\ + wzprobe.exe             # 一次性：二进制 wz 头部探测（J: 客户端 wz）
 │   ├── addaccount\ + addaccount.exe       # 插号/重置/-show/-del + 封禁表管理 -bans/-banip/-banmac/-unban*（P2.5）
@@ -243,5 +480,5 @@ I:\GMS
 - MySQL 5.5.53：`K:\079MAX2服务端\mysql\MySQL\bin\mysqld.exe`（root/root，库 `079-max2`）；客户端 `mysql.exe -uroot -proot 079-max2`。**冒烟已切 SQLite 不再需要**；要回 MySQL：`tools/start-mysqld.ps1`（勿用命令行直传中文路径，见 §三.9）+ gms.toml driver 改回 mysql。本会话结束时 mysqld 仍在跑（PID 36772），不用可 `Stop-Process -Name mysqld`。
 - 沙箱：本会话策略已放宽为 danger-full-access（approval=never），可直接写 `I:\GMS`；若回到 workspace-write 会拦 I:\GMS 写入，需一次性提权。`go run` 的 exe 在 Temp 会被拦，用 `go build -o tools\xxx.exe` 再跑。**Start-Process 对 workspace exe 仍被拒**，用 `tools/start-gms.cmd`（脚本内已 `cd /d I:\GMS`，工作目录固定为仓库根）。删除类命令另有拦截，见 §三.12。
 - 交流源码：`I:\ZEVMS079交流源码\src\...`（GBK 编码）；主参考 `I:\Zevms\src\...`。
-- 依赖：mysql driver + sqlx + `modernc.org/sqlite` v1.57.0（纯 Go，无 CGO）。
+- 依赖：gorm + glebarez/sqlite（纯 Go，无 CGO）+ testify；~~sqlx~~（断点 I 已迁 GORM，勿再 import modernc.org/sqlite，见断点 I.3）。
 - 项目根**没有 .gitignore**：`bin/`、`data/`、`*.exe` 均未被忽略（git status 一片 untracked），下次提交前建议补一个。

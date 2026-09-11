@@ -8,9 +8,9 @@
 | metric | value |
 |---|---|
 | java files total | 533 |
-| to migrate (TODO+ACTV) | 408 |
-| done (DONE) | 27 |
-| merged (MERG) | 44 |
+| to migrate (TODO+ACTV) | 403 |
+| done (DONE) | 30 |
+| merged (MERG) | 48 |
 | skipped (SKIP) | 52 |
 
 ## pkg (root) - 1 files, 41 lines -> - [SKIP]
@@ -97,7 +97,7 @@
 | client/LoginCryptoLegacy.java | 129 | MERG | internal/login/crypto.go | $H$ 校验，golden 对拍 |
 | client/MapleBuffStat.java | 219 | TODO | internal/model |  |
 | client/MapleBuffStatValueHolder.java | 18 | TODO | internal/model |  |
-| client/MapleCharacter.java | 8828 | ACTV | internal/model | P2.4 getDefault/saveNewCharToDB(characters 行)/deleteWhereCharacterId 子集入 internal/database/characters.go；其余 P4+ |
+| client/MapleCharacter.java | 8828 | ACTV | internal/model | P2.4 getDefault/saveNewCharToDB(characters 行)/deleteWhereCharacterId 子集入 internal/database/characters.go；P4.2 loadCharFromDB 的 characters 行读取 → database.GetCharacterByID + internal/channel 的 Player 过渡结构；本体(P5.1)未迁 |
 | client/MapleCharacterUtil.java | 283 | ACTV | internal/login/chars.go | P2.4 canCreateChar/isEligibleCharName/getIdByName 已迁（namePattern/RESERVED） |
 | client/MapleCharacterUtil副本.java | 270 | TODO | internal/model |  |
 | client/MapleClient.java | 1717 | ACTV | internal/login/auth.go | P2.2 已迁 login 子集（login/finishLogin/updateLoginState/unban/updateMacs）；P2.4 已迁 loadCharacters/login_Auth/allowedChar/getCharacterSlots/deleteCharacter 子集；其余 P4+ |
@@ -110,7 +110,7 @@
 | client/MapleQuestStatus.java | 145 | TODO | internal/model |  |
 | client/MapleStat.java | 60 | TODO | internal/model |  |
 | client/MonsterBook.java | 142 | TODO | internal/model |  |
-| client/PlayerRandomStream.java | 96 | TODO | internal/model |  |
+| client/PlayerRandomStream.java | 96 | ACTV | internal/packet | P4.2：RandStream（CRand32 三元组 + connectData）；保真 connectData 三连取值相同的怪癖；伤害/命中三个流待 P6 |
 | client/PlayerStats.java | 1143 | TODO | internal/model |  |
 | client/RockPaperScissors.java | 71 | TODO | internal/model |  |
 | client/Skill.java | 290 | TODO | internal/model |  |
@@ -420,7 +420,7 @@
 | java file | lines | status | go target | note |
 |---|---|---|---|---|
 | handling/ExternalCodeTableGetter.java | 74 | DONE | internal/protocol | opcode/dispatch |
-| handling/MapleServerHandler.java | 1298 | ACTV | internal/login/server.go | P2.2 已迁 opcode 分发（LOGIN_PASSWORD/PONG）+hello；其余 P2.3+ |
+| handling/MapleServerHandler.java | 1298 | ACTV | internal/login/server.go + channel/server.go | P2.2 已迁 opcode 分发（LOGIN_PASSWORD/PONG）+hello；P4.1 频道分支（channelActive 同款 IV/hello + channel>0 时的 isShutdown 门禁）；P4.2 频道侧 PLAYER_LOGGEDIN 实派（handlePlayerLoggedIn）+ OnClose 注销；其余频道 opcode（CHANGE_CHANNEL/移动/聊天…）待 P4.3+ |
 | handling/MapleServerHandlerMBean.java | 7 | TODO | internal/protocol | opcode/dispatch |
 | handling/RecvPacketOpcode.java | 238 | DONE | internal/protocol | opcode/dispatch |
 | handling/SendPacketOpcode.java | 317 | DONE | internal/protocol | opcode/dispatch |
@@ -439,16 +439,16 @@
 | handling/cashshop/handler/CashShopOperation.java | 1179 | TODO | internal/cashshop/handler |  |
 | handling/cashshop/handler/MTSOperation.java | 207 | TODO | internal/cashshop/handler |  |
 
-## pkg handling\channel - 4 files, 2101 lines -> internal/channel [TODO]
+## pkg handling\channel - 4 files, 2101 lines -> internal/channel [ACTV]
 
 | java file | lines | status | go target | note |
 |---|---|---|---|---|
-| handling/channel/ChannelServer.java | 706 | TODO | internal/channel |  |
+| handling/channel/ChannelServer.java | 706 | ACTV | internal/channel/server.go | P4.1 骨架：端口公式 7574+channel（频道 1..N，Count 上限 10）、与登录服同一 hello/IV、PONG→PING、PLAYER_LOGGEDIN 骨架、exp/meso/drop 上限 100、load 上报登录服（LoginWorker 的 10 分钟轮询改实时推送）；P4.2：addPlayer（注册 + 滚动公告）、removePlayer、forceRemovePlayerByAccId（跨频道顶号）、getMapFactory().getMap(id)（惰性地图注册表）；P4.3：进图/登出的视野广播下沉到 internal/mapp（addPlayer/removePlayer）；事件/雇佣商店/PersistingTask 待 P4.3b+/P5 |
 | handling/channel/fameRankingInfo.java | 6 | TODO | internal/channel |  |
 | handling/channel/MapleGuildRanking.java | 1097 | TODO | internal/channel |  |
-| handling/channel/PlayerStorage.java | 292 | TODO | internal/channel |  |
+| handling/channel/PlayerStorage.java | 292 | ACTV | internal/channel/players.go | P4.1：nameToChar/idToChar 双 map + RW 锁、register/deregister/按名按 id 查/在线数 + World.Find 副作用；P4.2：CharacterTransfer 挂起表（registerPendingPlayer/getPendingCharacter 取走式/deregisterPendingPlayer，40s 过期由读时判断，Java 的 PersistingTask ticker 待 P5）；PersistingTask 存档待 P5 |
 
-## pkg handling\channel\handler - 30 files, 11866 lines -> internal/channel/handler [TODO]
+## pkg handling\channel\handler - 30 files, 11866 lines -> internal/channel/handler [ACTV]
 
 | java file | lines | status | go target | note |
 |---|---|---|---|---|
@@ -465,17 +465,17 @@
 | handling/channel/handler/FamilyHandler.java | 291 | TODO | internal/channel/handler |  |
 | handling/channel/handler/GuildHandler.java | 209 | TODO | internal/channel/handler |  |
 | handling/channel/handler/HiredMerchantHandler.java | 319 | TODO | internal/channel/handler |  |
-| handling/channel/handler/InterServerHandler.java | 359 | TODO | internal/channel/handler |  |
+| handling/channel/handler/InterServerHandler.java | 359 | ACTV | internal/channel | P4.2：Loggedin2 全链（挂起表优先 → loadCharFromDB(GetCharacterByID) → forceRemovePlayerByAccId → ChannelServer.addPlayer → getCharInfo + temporaryStats_Reset → map.addPlayer，login.go）；跳过 登陆验证开关/GM 技能/updateLoginState(2)；好友/组队/公会/家族/信使待 P8 |
 | handling/channel/handler/InventoryHandler.java | 3048 | TODO | internal/channel/handler |  |
 | handling/channel/handler/ItemMakerHandler.java | 312 | TODO | internal/channel/handler |  |
 | handling/channel/handler/MobHandler.java | 213 | TODO | internal/channel/handler |  |
 | handling/channel/handler/MonsterCarnivalHandler.java | 106 | TODO | internal/channel/handler |  |
-| handling/channel/handler/MovementParse.java | 123 | TODO | internal/channel/handler |  |
+| handling/channel/handler/MovementParse.java | 123 | DONE | internal/movement | P4.4：`Parse`（parseMovement kind=1，逐命令布局 + 两个 Java 怪癖：NewFh=构造器第 5 参、3/4/7/8/9/11 组丢弃 duration）+ `UpdatePosition`（Target 接口 = AnimatedMapleMapObject 的 setPosition/setFh/setStance） |
 | handling/channel/handler/NPCHandler.java | 552 | TODO | internal/channel/handler |  |
 | handling/channel/handler/PartyHandler.java | 169 | TODO | internal/channel/handler |  |
 | handling/channel/handler/PetHandler.java | 230 | TODO | internal/channel/handler |  |
 | handling/channel/handler/Player.java | 11 | TODO | internal/channel/handler |  |
-| handling/channel/handler/PlayerHandler.java | 1378 | TODO | internal/channel/handler |  |
+| handling/channel/handler/PlayerHandler.java | 1378 | ACTV | internal/channel | P4.4：`MovePlayer`（skip(33) → MovementParse → broadcastMessage(player, movePlayer, false) → updatePosition + setOldPosition）已迁入 `channel/movement.go`；飞天检测/follow/clone/坠落计数（依赖 foothold）与其余 handler 待后续 |
 | handling/channel/handler/PlayerInteractionHandler.java | 890 | TODO | internal/channel/handler |  |
 | handling/channel/handler/PlayersHandler.java | 493 | TODO | internal/channel/handler |  |
 | handling/channel/handler/StatsHandling.java | 303 | TODO | internal/channel/handler |  |
@@ -489,15 +489,15 @@
 |---|---|---|---|---|
 | handling/login/Balloon.java | 14 | MERG | internal/login/worlds.go | P2.3 类型并入 login.Balloon + config |
 | handling/login/LoginInformationProvider.java | 31 | TODO | internal/login |  |
-| handling/login/LoginServer.java | 135 | MERG | internal/login/worlds.go | P2.3 静态字段(serverName/eventMessage/userLimit/load)->WorldConfig+config；loginAuth 表待 P2.4 |
-| handling/login/LoginWorker.java | 186 | MERG | internal/login/auth.go | P2.2 registerClient 子集（gender=10 分支+AuthSuccess）；P2.3 其 ServerList 双实现合并进 handleServerList |
+| handling/login/LoginServer.java | 135 | MERG | internal/login/worlds.go | P2.3 静态字段(serverName/eventMessage/userLimit/load)->WorldConfig+config；P4.1 loginAuth/loginIPAuth 表 -> internal/world/registry.go（put/take/contains/remove/add 全迁）+ addChannel/removeChannel/load 计数由 channel 服 SetChannelLoad 推送 |
+| handling/login/LoginWorker.java | 186 | MERG | internal/login/auth.go | P2.2 registerClient 子集（gender=10 分支+AuthSuccess）；P2.3 其 ServerList 双实现合并进 handleServerList；P4.1 load 换算（factor=1200*channels/userLimit，min 1200）迁至 displayChannelLoad（原始值不再被就地覆写） |
 
 ## pkg handling\login\handler - 2 files, 749 lines -> internal/login/handler [TODO]
 
 | java file | lines | status | go target | note |
 |---|---|---|---|---|
 | handling/login/handler/AutoRegister.java | 126 | DONE | internal/login/register.go | P2.5：自动注册 + createAccount（createAccount 的 email/birthday/qq 占位常量保留）；getAccountExists2/判断角色ID是否存在（DatabaseConnection1/游戏QQ号 表）不迁 |
-| handling/login/handler/CharLoginHandler.java | 623 | ACTV | internal/login | P2.2 已迁 login()；P2.3 已迁 ServerListRequest/ServerStatusRequest；P2.4 已迁 CharlistRequest/CheckCharName/CreateChar/DeleteChar/SetGenderRequest；P2.5 已迁自动注册分支 + hasBannedIP/isBannedMac 门禁（见 AutoRegister.java 行）；登陆保护/登陆队列/IP|机器码多开 走 config 键暂不迁；Character_With/WithoutSecondPassword P4 |
+| handling/login/handler/CharLoginHandler.java | 623 | ACTV | internal/login | P2.2 已迁 login()；P2.3 已迁 ServerListRequest/ServerStatusRequest；P2.4 已迁 CharlistRequest/CheckCharName/CreateChar/DeleteChar/SetGenderRequest；P2.5 已迁自动注册分支 + hasBannedIP/isBannedMac 门禁（见 AutoRegister.java 行）；登陆保护/登陆队列/IP|机器码多开 走 config 键暂不迁；P4.1 已迁 Character_WithoutSecondPassword（0x000A：DB loggedin==2 + login_Auth + 频道存活校验 → putLoginAuth + getServerIP）；Character_WithSecondPassword 在 v079 recvops 无 opcode（-2）不迁 |
 
 ## pkg handling\netty - 4 files, 295 lines -> internal/netw [TODO]
 
@@ -508,7 +508,7 @@
 | handling/netty/ServerConnection.java | 61 | DONE | internal/netw |  |
 | handling/netty/ServerInitializer.java | 30 | DONE | internal/netw |  |
 
-## pkg handling\world - 12 files, 2531 lines -> internal/world [TODO]
+## pkg handling\world - 12 files, 2531 lines -> internal/world [ACTV]
 
 | java file | lines | status | go target | note |
 |---|---|---|---|---|
@@ -523,7 +523,7 @@
 | handling/world/PartyOperation.java | 14 | TODO | internal/world |  |
 | handling/world/PlayerBuffStorage.java | 35 | TODO | internal/world |  |
 | handling/world/PlayerBuffValueHolder.java | 16 | TODO | internal/world |  |
-| handling/world/World.java | 1433 | TODO | internal/world |  |
+| handling/world/World.java | 1433 | ACTV | internal/world | P4.1 迁 World.Find 子集（register/forceDeregister/find/findByName → find.go，PlayerStorage 注册时同步）；World.Client 的登录会话注册表落在 login.Server.clients（双登踢人用）；Party/Guild/Buddy/Messenger 待 P8 |
 
 ## pkg handling\world\family - 3 files, 816 lines -> internal/world/family [TODO]
 
@@ -833,7 +833,7 @@
 | server/life/ElementalEffectiveness.java | 28 | TODO | internal/life |  |
 | server/life/MapleLifeFactory.java | 243 | TODO | internal/life |  |
 | server/life/MapleMonster.java | 1507 | TODO | internal/life |  |
-| server/life/MapleMonsterInformationProvider.java | 111 | TODO | internal/life |  |
+| server/life/MapleMonsterInformationProvider.java | 111 | DONE | internal/life/drops.go | P3.5：掉落缓存（EQUIP chance/3、出错不缓存） |
 | server/life/MapleMonsterStats.java | 272 | TODO | internal/life |  |
 | server/life/MapleNPC.java | 55 | TODO | internal/life |  |
 | server/life/MobAttackInfo.java | 41 | TODO | internal/life |  |
@@ -856,7 +856,7 @@
 |---|---|---|---|---|
 | server/maps/AbstractAnimatedMapleMapObject.java | 35 | TODO | internal/mapp |  |
 | server/maps/AbstractMapleMapObject.java | 34 | TODO | internal/mapp |  |
-| server/maps/AnimatedMapleMapObject.java | 13 | TODO | internal/mapp |  |
+| server/maps/AnimatedMapleMapObject.java | 13 | ACTV | internal/movement | P4.4：setPosition/setFh/setStance 抽成 `movement.Target`，由 `channel.Player` 实现（updatePosition 的驱动面） |
 | server/maps/AramiaFireWorks.java | 184 | TODO | internal/mapp |  |
 | server/maps/chr.java | 8 | TODO | internal/mapp |  |
 | server/maps/cserv.java | 11 | TODO | internal/mapp |  |
@@ -869,11 +869,11 @@
 | server/maps/MapleFootholdTree.java | 175 | TODO | internal/mapp |  |
 | server/maps/MapleGenericPortal.java | 119 | TODO | internal/mapp |  |
 | server/maps/MapleLove.java | 54 | TODO | internal/mapp |  |
-| server/maps/MapleMap.java | 4359 | TODO | internal/mapp |  |
+| server/maps/MapleMap.java | 4359 | ACTV | internal/mapp | P4.2 玩家集合（addPlayer/removePlayer 的 mapobjects 部分 + MapFactory 惰性建图）；P4.3 spawn/despawn 广播（addPlayer → 对同图其他人 spawnPlayerMapobject + 新人对每个老玩家 + 自身；removePlayer → 广播 removePlayerFromMap；broadcastMessage(source, pkt, false) 的 source 排除）；P4.4 movePlayer 由 `channel.MovePlayer` 的广播 + Player.ApplyMovement 承担（Map.movePlayer 只重设坐标/刷新物件可见性，无物件时为恒等）；foot-hold/life/portal/reactor/掉落/地图特化（送货/月妙等）与 view-range 过滤（Point 重载）待 P4.3b/P6 |
 | server/maps/MapleMapEffect.java | 35 | TODO | internal/mapp |  |
 | server/maps/MapleMapFactory.java | 775 | TODO | internal/mapp |  |
 | server/maps/MapleMapItem.java | 146 | TODO | internal/mapp |  |
-| server/maps/MapleMapObject.java | 16 | TODO | internal/mapp |  |
+| server/maps/MapleMapObject.java | 16 | ACTV | internal/mapp | P4.2：mapp.Player 接口（ObjectID）；玩家的 oid = cid（Java setObjectId 抛 UnsupportedOperationException）；P4.3：sendSpawnData → Player.SendSpawnData(sink)（= 把自身 spawn 包写给收件人），另有 DespawnData 供 removePlayer 广播 |
 | server/maps/MapleMapObjectType.java | 17 | TODO | internal/mapp |  |
 | server/maps/MapleMapPortal.java | 11 | TODO | internal/mapp |  |
 | server/maps/MapleMist.java | 121 | TODO | internal/mapp |  |
@@ -890,14 +890,14 @@
 | server/maps/SpeedRunType.java | 22 | TODO | internal/mapp |  |
 | server/maps/SummonMovementType.java | 18 | TODO | internal/mapp |  |
 
-## pkg server\movement - 4 files, 150 lines -> internal/channel/movement [TODO]
+## pkg server\movement - 4 files, 150 lines -> internal/movement [MERG]
 
 | java file | lines | status | go target | note |
 |---|---|---|---|---|
-| server/movement/AbstractLifeMovement.java | 41 | TODO | internal/channel/movement |  |
-| server/movement/LifeMovement.java | 12 | TODO | internal/channel/movement |  |
-| server/movement/LifeMovementFragment.java | 10 | TODO | internal/channel/movement |  |
-| server/movement/StaticLifeMovement.java | 87 | TODO | internal/channel/movement |  |
+| server/movement/AbstractLifeMovement.java | 41 | MERG | internal/movement | P4.4：type/position/duration/newstate/newfh 收进 `Fragment` 字段；newfh 的语义怪癖保留（见 MovementParse 行） |
+| server/movement/LifeMovement.java | 12 | MERG | internal/movement | P4.4：getType/getDuration/getNewstate/getNewFh 变成 Fragment 字段 |
+| server/movement/LifeMovementFragment.java | 10 | MERG | internal/movement | P4.4：serialize/getPosition -> `Fragment.Serialize`/`Pos` |
+| server/movement/StaticLifeMovement.java | 87 | MERG | internal/movement | P4.4：`Fragment`（唯一的具体实现；pixelsPerSecond/unk/fh/wui + 6 种序列化布局） |
 
 ## pkg server\quest - 7 files, 1240 lines -> internal/script/quest [TODO]
 
@@ -945,7 +945,7 @@
 | tools/KoreanDateUtil.java | 51 | TODO | internal/protocol+crypto | split per file |
 | tools/MapleAESOFB.java | 130 | DONE | internal/protocol+crypto | split per file |
 | tools/MapleCustomEncryption.java | 74 | DONE | internal/protocol+crypto | split per file |
-| tools/MaplePacketCreator.java | 5826 | TODO | internal/protocol+crypto | split per file |
+| tools/MaplePacketCreator.java | 5826 | ACTV | internal/packet | P4.2：getCharInfo(WARP_TO_MAP)/temporaryStats_Reset/serverMessage；P4.3：spawnPlayerMapobject（SPAWN_PLAYER 0x00A2 全字段 + CHAR_MAGIC_SPAWN 8 处重复）/removePlayerFromMap（0x00A3）+ addRingInfo(List)/addMarriageRingLook；P4.4：movePlayer（MOVE_PLAYER 0x00BB：int cid + int 0 + 移动列表）与 spawnPlayerMapobject 的 pos/stance 改取真实值；其余按域拆分增量迁（LOGIN 系仍在 internal/login/packets.go） |
 | tools/MockIOSession.java | 156 | TODO | internal/protocol+crypto | split per file |
 | tools/Pair.java | 47 | TODO | internal/protocol+crypto | split per file |
 | tools/StringUtil.java | 143 | TODO | internal/protocol+crypto | split per file |
@@ -971,7 +971,7 @@
 | tools/packet/MonsterBookPacket.java | 52 | TODO | internal/packet |  |
 | tools/packet/MonsterCarnivalPacket.java | 77 | TODO | internal/packet |  |
 | tools/packet/MTSCSPacket.java | 1065 | TODO | internal/packet |  |
-| tools/packet/PacketHelper.java | 684 | ACTV | internal/login/packets.go | P2.4 已迁 addCharStats/addCharLook(addCharEntry 子集)；inventory 系 P3 |
+| tools/packet/PacketHelper.java | 684 | ACTV | internal/packet | P2.4：addCharLook；P4.2：addCharStats/getTime → internal/packet（login/channel 共享）+ addCharacterInfo（getCharInfo 用，背包/技能/任务等空段）；P4.3：addCharLook 也移入 internal/packet（带 mega 参数，login=mega=true、频道 spawn=mega=false；login 侧改调 packet.AddCharLook）+ addAnnounceBox 空态；P4.4：serializeMovementList → movement.SerializeMovementList；inventoryitems 实物序列化待 P5.2 |
 | tools/packet/PetPacket.java | 226 | TODO | internal/packet |  |
 | tools/packet/PlayerShopPacket.java | 573 | TODO | internal/packet |  |
 | tools/packet/UIPacket.java | 174 | TODO | internal/packet |  |
@@ -982,7 +982,7 @@
 |---|---|---|---|---|
 | tools/wztosql/AddCashItemToDB.java | 31 | TODO | tools/wztosql |  |
 | tools/wztosql/DumpMobSkills.java | 154 | TODO | tools/wztosql |  |
-| tools/wztosql/MonsterDropCreator.java | 887 | TODO | tools/wztosql |  |
+| tools/wztosql/MonsterDropCreator.java | 887 | DONE | internal/dropgen + tools/wztosql | P3.5：wz 侧重建 + `-diff` 漂移对比，不写库（本服掉落以库为准） |
 | tools/wztosql/WzStringDumper.java | 239 | TODO | tools/wztosql |  |
 
 ## pkg zevms\data - 1 files, 29 lines -> - [SKIP]

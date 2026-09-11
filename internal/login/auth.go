@@ -63,6 +63,9 @@ type accountStore interface {
 	IsBannedMac(ctx context.Context, mac string) (bool, error)
 	CountAccountsByMac(ctx context.Context, mac string) (int, error)
 	InsertAutoRegisterAccount(ctx context.Context, name, passwordSHA1, sessionIP, mac string) error
+
+	// P4.1 double-login cleanup (MapleClient.unlockAcc else-branch).
+	ResetAccountLogin(ctx context.Context, id int) error
 }
 
 // client is the per-connection login state (Java MapleClient subset).
@@ -181,6 +184,9 @@ func (h handler) handleLoginPassword(s *netw.Session, r *protocol.Reader) {
 		h.srv.log.Error("login state update failed", "err", err, "accID", acc.ID)
 	} else {
 		c.loggedIn = true // Java updateLoginState(LOGIN_LOGGEDIN): loggedIn = true
+		// P4.1: remember which session holds the account so a later double
+		// login can evict it (Java World.Client registration).
+		h.srv.registerClient(acc.ID, s)
 	}
 
 	if c.gender == 10 { // Java getGenderNeeded for unset-gender accounts
@@ -230,9 +236,10 @@ func (srv *Server) dbLogin(ctx context.Context, c *client, login, pwd string) (i
 		}
 	}
 	if loggedin > database.LoginNotLoggedIn {
-		// Java: on double login with matching sha1 password, unlockAcc().
-		// Go: report 7; the stale session cleanup arrives with the channel
-		// server (P4).
+		// Java: the double-login branch still answers loginok=7, but first
+		// unlocks the account (evict the live session, or clear the stale
+		// loggedin when the old client is gone) so the retry succeeds.
+		srv.unlockAcc(ctx, acc.ID)
 		return loginAlreadyIn, acc, false
 	}
 

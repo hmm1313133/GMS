@@ -14,28 +14,31 @@
 | handling/RecvPacketOpcode + recv.properties | 238 | protocol/opcode_gen.go | ✅ | P0.4 生成 155 |
 | handling/SendPacketOpcode + send.properties | 317 | protocol/opcode_gen.go | ✅ | P0.4 生成 245 |
 | tools/data/*（LEAccessor 5 件） | 551 | protocol/reader.go, writer.go | ✅ | |
-| tools/MaplePacketCreator.java | 5826 | packet/*.go（按域拆 10+ 文件） | ⬜ | P2 起按需逐域搬 |
-| tools/packet/*（10 件） | 3815 | packet/ 对应域 | 🔄 | LoginPacket 12 函数 + PacketHelper addCharStats/addCharLook 已入 internal/login/packets.go（P2.2-P2.4） |
-| handling/MapleServerHandler.java | 1298 | login|channel/cashshop handler 注册表 | 🔄 | P2.2 已迁 hello+LOGIN_PASSWORD/PONG 分发；P2.3 已迁 SERVERLIST/LICENSE/SERVERSTATUS 分发 |
+| tools/MaplePacketCreator.java | 5826 | packet/*.go（按域拆 10+ 文件） | 🔄 | P2 起按需逐域搬；P4.2 建 `internal/packet`：getCharInfo(WARP_TO_MAP)/temporaryStats_Reset/serverMessage/AddCharStats 共享；P4.3 加 spawnPlayerMapobject(SPAWN_PLAYER)/removePlayerFromMap + addRingInfo(List)/addMarriageRingLook；P4.4 加 movePlayer(MOVE_PLAYER 0x00BB) 与 spawn 的真实 pos/stance |
+| tools/packet/*（10 件） | 3815 | packet/ 对应域 | 🔄 | LoginPacket 12 函数 + PacketHelper addCharStats/addCharLook（P2.2-P2.4）；P4.1 加 getServerIP（选角交棒 SERVER_IP）与 enableActions（UPDATE_STATS 空掩码）；P4.2 把 addCharStats/getTime/addCharacterInfo 提到 `internal/packet`（login+channel 共享），login 侧 addCharEntry 改为调用；P4.3 addCharLook 也提到 `internal/packet`（带 mega 参数：login=true、频道 spawn=false）；P4.4 serializeMovementList → movement.SerializeMovementList |
+| handling/MapleServerHandler.java | 1298 | login|channel/cashshop handler 注册表 | 🔄 | P2.2 已迁 hello+LOGIN_PASSWORD/PONG 分发；P2.3 已迁 SERVERLIST/LICENSE/SERVERSTATUS 分发；P4.1 频道分支（同款 IV/hello + channel>0 的 isShutdown 门禁）；P4.2 频道侧 PLAYER_LOGGEDIN 实派（handlePlayerLoggedIn）+ OnClose 注销；P4.4 MOVE_PLAYER(0x24) 派发 handleMovePlayer |
 
 ## 2. 登录与账号（-> internal/login, database）
 
 | Java 原件 | Go 目标 | 状态 | 备注 |
 |---|---|---|---|
-| handling/login/*（6 件 1115 行） | login/server.go | ✅ | P1 冒烟（握手/PING）；P2 补账密/选角 |
-| handling/login/handler/CharLoginHandler | login/auth.go+worlds.go+chars.go+register.go | 🔄 | P2.2 已迁 login()；P2.3 已迁 ServerList/ServerStatus；P2.4 已迁 Charlist/CheckCharName/CreateChar/DeleteChar/SetGender；P2.5 已迁自动注册分支 + IP/MAC 封禁门禁；P4 余 Character_With/WithoutSecondPassword |
+| handling/login/*（6 件 1115 行） | login/server.go | ✅ | P1 冒烟（握手/PING）；P2 补账密/选角；P4.1 补选角交棒（SERVER_IP + loginAuth 票据） |
+| handling/login/handler/CharLoginHandler | login/auth.go+worlds.go+chars.go+select.go+register.go | 🔄 | P2.2 已迁 login()；P2.3 已迁 ServerList/ServerStatus；P2.4 已迁 Charlist/CheckCharName/CreateChar/DeleteChar/SetGender；P2.5 已迁自动注册分支 + IP/MAC 封禁门禁；P4.1 已迁 Character_WithoutSecondPassword（0x000A）；Character_WithSecondPassword 在 v079 recvops 无 opcode（-2）不迁 |
+| handling/login/LoginServer.loginAuth/loginIPAuth | world/registry.go | ✅ | P4.1：charId→票据(ip/tempIp/channel) + ip 集合，put/get(取走)/contains/remove/add 全迁；ZEV 原版频道侧那个 containsIPAuth 判断是空 if（不拦），Go 保真不拦 |
+| handling/login/LoginWorker.load 换算 | login/worlds.go displayChannelLoad | ✅ | P4.1：factor=1200*频道数/userLimit、min 1200 上限；Go 每次回包按真实人数换算（原版是把换算值就地写回共享 map，下一轮会二次换算） |
+| client/MapleClient.unlockAcc | login/server.go | ✅ | P4.1 双登清理：有活跃会话→弹窗+关连接（对齐 unLockDisconnect 的 1s 延迟）；无活跃会话→accounts.loggedin 置 0（Java else 分支），本次仍答 7 |
 | handling/login/handler/AutoRegister | login/register.go | ✅ | P2.5：ZEV.自动注册 + createAccount（同机器码 ≤100）；IP/MAC 封禁见 client/MapleClient 行 |
 | client/MapleClient.hasBannedIP / isBannedMac | login/register.go + database/bans.go | ✅ | P2.5：ipbans 前缀匹配 / macbans 精确匹配（含零 MAC 与长度≠17 豁免）；表结构出自 migrations/0001_base.sql:1822/1911 |
 | client/LoginCrypto(+)Legacy | login/crypto.go | ✅ | SHA+盐，golden 对拍（含 2 个 Java quirk） |
 | gui.ZEVMS2 中 wzpath/启动装配段 | cmd/gms/main.go | ✅ | 只取装配语义 |
-| database/DatabaseConnection(.1) | database/db.go | ✅ | sqlx 池替代线程绑定连接 |
+| database/DatabaseConnection(.1) | database/db.go | ✅ | GORM 池替代线程绑定连接（断点 I 从 sqlx 迁移） |
 
 ## 3. 世界与频道（-> internal/world, channel）
 
 | Java 原件 | Go 目标 | 状态 | 备注 |
 |---|---|---|---|
-| handling/world/*（21 件 4731 行） | world/*.go | ⬜ | 跨频道广播/组队/好友/公会/家族 |
-| handling/channel/*（34 件 13967 行） | channel/*.go + channel/handler/*.go | ⬜ | 含 PlayerStorage/ChannelServer |
+| handling/world/*（21 件 4731 行） | world/*.go | 🔄 | P4.1：World.Find 子集（register/forceDeregister/find/findByName）+ LoginRegistry；跨频道广播/组队/好友/公会/家族待 P8 |
+| handling/channel/*（34 件 13967 行） | channel/*.go + channel/handler/*.go | 🔄 | P4.1：ChannelServer 骨架（端口 7574+channel、多频道实例、hello、load 上报）+ PlayerStorage（nameToChar/idToChar + World.Find 副作用）；P4.2：Loggedin2 进图链（login.go）、PlayerStorage 的 CharacterTransfer 挂起表、ChannelServer 的地图注册表/addPlayer/forceRemovePlayerByAccId、INTERSERVER 部分 → `internal/packet`+`internal/mapp`；P4.3：spawn/despawn 广播（mapp.Player.SendSpawnData/DespawnData）；P4.4：PlayerHandler.MovePlayer → channel/movement.go（MOVE_PLAYER 解析/广播/坐标落地）；事件/商店/PersistingTask/地图内容待 P4.5+ |
 | handling/cashshop/*（3 件 1447 行） | cashshop/*.go | ⬜ | MTS 可裁剪 |
 | server/Timer.java | internal/scheduler.go | ⬜ | Ticker+context |
 | server/ShutdownServer | cmd 关停钩子 | ⬜ | |
@@ -44,7 +47,7 @@
 
 | Java 原件 | Go 目标 | 状态 | 备注 |
 |---|---|---|---|
-| client/MapleCharacter.java | model/character/*.go（拆 5+ 文件） | ⬜ | 8828 行拆：属性/存档/技能/任务/社交 |
+| client/MapleCharacter.java | model/character/*.go（拆 5+ 文件） | 🔄 | P2.4 getDefault/saveNewCharToDB 子集；P4.2 loadCharFromDB 的 characters 行 + `channel.Player` 过渡结构（`CHR`/`MapID()`/`AccountID()`）；8828 行本体拆属性/存档/技能/任务/社交待 P5.1 |
 | client/inventory/*（18 件 2724 行） | model/inventory/*.go | ⬜ | |
 | client/PlayerStats, Skill, SkillFactory | model/stats.go, skill.go | ⬜ | J6 对拍 |
 | client/messages/*（12 件 6466 行） | channel/command/*.go | ⬜ | GM 指令 |
@@ -55,9 +58,9 @@
 
 | Java 原件 | Go 目标 | 状态 | 备注 |
 |---|---|---|---|
-| server/maps/*（35 件 8636 行） | mapp/*.go | ⬜ | MapleMap 4562 行是重头 |
+| server/maps/*（35 件 8636 行） | mapp/*.go | 🔄 | P4.2：`mapp.Map` 最小实例（id + 玩家集合 + `Player` 接口 ObjectID）+ `ChannelServer.getMapFactory().getMap(id)` 惰性注册；P4.3：spawn/despawn 视野广播（`Map.AddPlayer` 对同图其他人 + 新人对每个老玩家 + 自身；`Map.RemovePlayer` 广播 removePlayerFromMap；`Map.Broadcast(pkt, except)`）+ `MapleMapObject.sendSpawnData` → `Player.SendSpawnData`；P4.4：`AnimatedMapleMapObject` 的 setPosition/setFh/setStance → `movement.Target`（`channel.Player` 实现），`MapleMap.movePlayer` 的坐标落地由 `Player.ApplyMovement` 承担；地图内容（MapleMapFactory 的 info/foothold/life/portal）与 view-range 过滤（Point 重载）待 P4.3b/P6 |
 | server/life/*（23 件 3602 行） | life/*.go | ⬜ | 怪物/NPC/反应堆 |
-| server/movement/*（4 件 150 行） | channel/movement.go | ⬜ | |
+| server/movement/*（4 件 150 行）+ handling/channel/handler/MovementParse | movement/*.go | ✅ | P4.4：`Fragment`（= StaticLifeMovement，本树唯一实现）+ `Parse`/`Serialize`/`SerializeMovementList`/`UpdatePosition`；保真两个怪癖（NewFh=构造器第 5 参；3/4/7/8/9/11 组丢弃 duration） |
 | server/custom/respawn | mapp/spawner.go | ⬜ | |
 
 ## 6. 战斗与效果（-> internal/combat）
@@ -78,7 +81,11 @@
 | String.wz 名字表（Cash/Consume/Eqp/Etc/Ins/Pet/Map/Mob/Npc/Skill + Etc.wz ForbiddenName） | wzs/names.go Names | ✅ | P3.3 首片：按 id 建索引（Java 按计算路径查，本服 Skill.img 有 8 位键、Map.img 无 china 区） |
 | server/MapleItemInformationProvider | wzs/itemdata.go | ⬜ | 1459 行 |
 | server/life/MapleLifeFactory, maps/MapleMapFactory | wzs/mapfactory.go, life/factory.go | ⬜ | |
-| tools/wztosql/*（4 件 1311 行） | tools/wztosql/ | ⬜ | 掉落/道具入库 |
+| tools/wztosql/MonsterDropCreator.java（887 行） | internal/dropgen + tools/wztosql | ✅ | P3.5：仅"wz 侧重建 + 漂移对比"，**不写库**（本服掉落是第三方预置，库为准） |
+| tools/wztosql/WzStringDumper.java, DumpMobSkills.java, AddCashItemToDB.java | - | ⬜ | 239/154/31 行，P3.5 未做（掉落之外的导出工具） |
+| server/life/MapleMonsterInformationProvider | internal/life/drops.go | ✅ | P3.5：掉落表缓存（EQUIP chance/3、出错不缓存、Go 加 RWMutex 修 Java 数据竞争） |
+| server/life/MapleMonsterInformationProvider 读的表 | internal/database/drops.go + migrations/0002_drop_data.sql | ✅ | P3.5：DAO + 权威库快照（14,259 行），SQLite 空表时自动回放 |
+| tools/dropexport（Go 新增，无 Java 对应） | tools/dropexport | ✅ | P3.5：把权威 079-max2 掉落表导出成可移植 SQL |
 | client/SkillFactory | wzs/skilldata.go | ⬜ | |
 
 > 注 1（2026-08-30 决策）：J3 原定"自研二进制 wz reader + 与 Java XML 输出 diff"。

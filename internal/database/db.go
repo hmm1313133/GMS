@@ -1,48 +1,74 @@
 // Package database is the Go replacement for Java
-// database/DatabaseConnection(.1).java: a MySQL connection pool over
-// database/sql + sqlx, configured from [database] in gms.toml (no more
-// hardcoded root/root).
+// database/DatabaseConnection(.1).java: a GORM-backed connection pool over
+// database/sql, configured from [database] in gms.toml (no more hardcoded
+// root/root).
 //
 // The driver is switchable via [database].driver: "mysql" is the faithful
-// original backend; "sqlite" (pure-Go modernc.org/sqlite, no CGO) auto-
-// provisions the `accounts` table from the 079-max2 dump so dev/smoke runs
-// do not need the MySQL 5.5 distribution running.
+// original backend (the 079-max2 schema); "sqlite" is a pure-Go dev/smoke
+// backend that provisions the same schema so no MySQL 5.5 distribution is
+// needed.
+//
+// Two deliberate choices (see docs/SESSION_STATE.md §GORM):
+//
+//   - The SQLite driver is github.com/glebarez/sqlite, not the official
+//     gorm.io/driver/sqlite: the latter pulls mattn/go-sqlite3, which needs
+//     CGO (gcc) and this box has none. glebarez is a fork of modernc's
+//     pure-Go engine. Consequence: modernc.org/sqlite must NOT be imported
+//     anywhere in this binary, because both register a driver named
+//     "sqlite" and database/sql panics with "Register called twice".
+//
+//   - The schema is NOT auto-migrated. GORM's AutoMigrate is only ever
+//     pointed at the throwaway SQLite file; the production MySQL database
+//     (225 tables of live data) is migrated by migrations/*.sql, and the
+//     models here are business-facing subsets (Character carries 27 of
+//     characters' 62 columns), so AutoMigrate would silently narrow them.
 package database
 
 import (
 	"context"
-	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
-	"github.com/jmoiron/sqlx"
-
 	"GMS/internal/config"
 
-	_ "github.com/go-sql-driver/mysql" // mysql driver
-	_ "modernc.org/sqlite"             // pure-Go sqlite driver (no CGO)
+	"github.com/glebarez/sqlite"
+	"gorm.io/driver/mysql"
+	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 )
 
-// sqlNoRows re-exports sql.ErrNoRows for the DAO files.
-var sqlNoRows = sql.ErrNoRows
+// ErrNotFound is GORM's "no row" sentinel, re-exported so DAO callers do not
+// have to import gorm only for the comparison.
+var ErrNotFound = gorm.ErrRecordNotFound
 
-// DB wraps sqlx.DB and adds the session defaults the Java code applied on
-// every new connection (SET time_zone = '+08:00', MySQL only).
+// DB wraps *gorm.DB and keeps the driver name (the SQLite path provisions
+// schema and seeds that MySQL already has).
 type DB struct {
-	*sqlx.DB
-	driver string // "mysql" | "sqlite" (dialect marker for shared queries)
+	*gorm.DB
+	driver string // "mysql" | "sqlite"
 }
 
-// dialectInt quotes the `int` column (reserved-ish name) per dialect:
-// MySQL backticks, SQLite double quotes.
-func (db *DB) dialectInt() string {
-	if db.driver == "sqlite" {
-		return `"int"`
+// Driver reports the backend in use ("mysql" | "sqlite").
+func (db *DB) Driver() string { return db.driver }
+
+// gormConfig is shared by both backends.
+//
+// Logger runs at Warn: GORM's default logs every statement at Info, which
+// would drown the server log (the drop seed alone is 14k rows).
+// TranslateError turns driver-specific failures (duplicate key, ...) into
+// gorm's sentinels so the DAO layer can branch on them.
+func gormConfig() *gorm.Config {
+	return &gorm.Config{
+		Logger:         logger.Default.LogMode(logger.Warn),
+		TranslateError: true,
+		// The 079-max2 dump declares no foreign keys we rely on, and the
+		// SQLite dev backend would otherwise need them declared in order.
+		DisableForeignKeyConstraintWhenMigrating: true,
 	}
-	return "`int`"
 }
 
 // Open creates the pool and verifies connectivity. The DSN is taken from
@@ -59,27 +85,58 @@ func Open(cfg config.Database) (*DB, error) {
 }
 
 func openMySQL(cfg config.Database) (*DB, error) {
-	db, err := sqlx.Connect("mysql", cfg.DSN)
+	db, err := gorm.Open(mysql.Open(forceParseTime(cfg.DSN)), gormConfig())
 	if err != nil {
 		return nil, fmt.Errorf("database: connect: %w", err)
 	}
-	db.SetMaxOpenConns(cfg.MaxOpenConns)
-	db.SetMaxIdleConns(cfg.MaxIdleConns)
-	db.SetConnMaxLifetime(time.Duration(cfg.ConnMaxLifetimeSec) * time.Second)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if _, err := db.ExecContext(ctx, "SET time_zone = '+08:00'"); err != nil {
-		db.Close()
+	if err := tunePool(db, cfg); err != nil {
+		closeGORM(db)
+		return nil, err
+	}
+	// Java applied this on every new connection (DatabaseConnection).
+	if err := db.Exec("SET time_zone = '+08:00'").Error; err != nil {
+		closeGORM(db)
 		return nil, fmt.Errorf("database: set time_zone: %w", err)
 	}
 	return &DB{DB: db, driver: "mysql"}, nil
 }
 
+// tunePool applies the configured pool limits (GORM wraps database/sql, so
+// the underlying pool is still the same one).
+func tunePool(db *gorm.DB, cfg config.Database) error {
+	sqlDB, err := db.DB()
+	if err != nil {
+		return fmt.Errorf("database: pool handle: %w", err)
+	}
+	sqlDB.SetMaxOpenConns(cfg.MaxOpenConns)
+	sqlDB.SetMaxIdleConns(cfg.MaxIdleConns)
+	sqlDB.SetConnMaxLifetime(time.Duration(cfg.ConnMaxLifetimeSec) * time.Second)
+	return nil
+}
+
+// isNotFound reports a "no row" result, covering both the translated and the
+// raw driver error shapes.
+func isNotFound(err error) bool {
+	return errors.Is(err, gorm.ErrRecordNotFound)
+}
+
+// forceParseTime appends parseTime=true when the DSN omits it: without it
+// the MySQL driver hands back []byte for DATETIME columns and every
+// sql.NullTime scan (GetAccountState's lastlogin) fails at runtime with a
+// confusing "unsupported Scan" error.
+func forceParseTime(dsn string) string {
+	if strings.Contains(dsn, "parseTime=") {
+		return dsn
+	}
+	if strings.Contains(dsn, "?") {
+		return dsn + "&parseTime=true"
+	}
+	return dsn + "?parseTime=true"
+}
+
 // openSQLite provisions a local SQLite DB: creates the parent directory and
-// applies the accounts DDL (SQLite translation of CREATE TABLE `accounts`
-// in migrations/0001_base.sql:224) so a fresh file is immediately usable
-// for login smoke tests.
+// applies the schema DDL (SQLite translation of migrations/0001_base.sql) so
+// a fresh file is immediately usable for login smoke tests.
 //
 // Caveat: SQLite CURRENT_TIMESTAMP stores UTC (MySQL path stores +08:00 per
 // the Java session tz); only the 20s server-transition staleness check
@@ -92,21 +149,36 @@ func openSQLite(cfg config.Database) (*DB, error) {
 			}
 		}
 	}
-	db, err := sqlx.Connect("sqlite", cfg.DSN)
+	db, err := gorm.Open(sqlite.Open(cfg.DSN), gormConfig())
 	if err != nil {
 		return nil, fmt.Errorf("database: connect sqlite: %w", err)
 	}
-	db.SetMaxOpenConns(cfg.MaxOpenConns)
-	db.SetMaxIdleConns(cfg.MaxIdleConns)
-	db.SetConnMaxLifetime(time.Duration(cfg.ConnMaxLifetimeSec) * time.Second)
-
+	if err := tunePool(db, cfg); err != nil {
+		closeGORM(db)
+		return nil, err
+	}
 	for _, stmt := range sqliteSchema {
-		if _, err := db.Exec(stmt); err != nil {
-			db.Close()
+		if err := db.Exec(stmt).Error; err != nil {
+			closeGORM(db)
 			return nil, fmt.Errorf("database: sqlite schema: %w", err)
 		}
 	}
-	return &DB{DB: db, driver: "sqlite"}, nil
+	gdb := &DB{DB: db, driver: "sqlite"}
+	// P3.5: replay the drop snapshot shipped with the 079MAX2 database so the
+	// smoke backend drops the same items as production. No-op when the table
+	// already has rows (operator tuning wins).
+	if err := gdb.seedDrops(); err != nil {
+		closeGORM(db)
+		return nil, fmt.Errorf("database: sqlite drop seed: %w", err)
+	}
+	return gdb, nil
+}
+
+// closeGORM releases the underlying database/sql pool on an open failure.
+func closeGORM(db *gorm.DB) {
+	if sqlDB, err := db.DB(); err == nil {
+		sqlDB.Close()
+	}
 }
 
 // sqliteFilePath extracts the file path of a sqlite DSN (drops a `file:`
@@ -256,9 +328,48 @@ var sqliteSchema = []string{
 	  macbanid INTEGER PRIMARY KEY AUTOINCREMENT,
 	  mac TEXT NOT NULL
 	)`,
+	// drop_data / drop_data_global: P3.5 drop tables
+	// (migrations/0001_base.sql:1114/1129), MySQL->SQLite translation.
+	// Provisioned empty here, then filled from the embedded snapshot of the
+	// authoritative 079-max2 database (see seedDrops in drops.go).
+	`CREATE TABLE IF NOT EXISTS drop_data (
+	  id INTEGER PRIMARY KEY AUTOINCREMENT,
+	  dropperid INTEGER NOT NULL DEFAULT 0,
+	  itemid INTEGER NOT NULL DEFAULT 0,
+	  minimum_quantity INTEGER NOT NULL DEFAULT 1,
+	  maximum_quantity INTEGER NOT NULL DEFAULT 1,
+	  questid INTEGER NOT NULL DEFAULT 0,
+	  chance INTEGER NOT NULL DEFAULT 0
+	)`,
+	`CREATE INDEX IF NOT EXISTS drop_data_dropperid ON drop_data(dropperid)`,
+	`CREATE TABLE IF NOT EXISTS drop_data_global (
+	  id INTEGER PRIMARY KEY AUTOINCREMENT,
+	  continent INTEGER NOT NULL DEFAULT 0,
+	  dropType INTEGER NOT NULL DEFAULT 0,
+	  itemid INTEGER NOT NULL DEFAULT 0,
+	  minimum_quantity INTEGER NOT NULL DEFAULT 1,
+	  maximum_quantity INTEGER NOT NULL DEFAULT 1,
+	  questid INTEGER NOT NULL DEFAULT 0,
+	  chance INTEGER NOT NULL DEFAULT 0,
+	  comments TEXT DEFAULT NULL
+	)`,
+}
+
+// Close releases the underlying pool. GORM's *gorm.DB has no Close of its
+// own - it borrows database/sql's pool - so closing goes through db.DB().
+func (db *DB) Close() error {
+	sqlDB, err := db.DB.DB()
+	if err != nil {
+		return fmt.Errorf("database: pool handle: %w", err)
+	}
+	return sqlDB.Close()
 }
 
 // Ping checks the pool with a bounded context (Java: Connection.isValid).
 func (db *DB) Ping(ctx context.Context) error {
-	return db.DB.PingContext(ctx)
+	sqlDB, err := db.DB.DB()
+	if err != nil {
+		return fmt.Errorf("database: pool handle: %w", err)
+	}
+	return sqlDB.PingContext(ctx)
 }

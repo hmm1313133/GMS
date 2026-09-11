@@ -70,13 +70,13 @@ func main() {
 	case *listBans:
 		listBanRules(ctx, db)
 	case *banIP != "":
-		execBan(ctx, db, "INSERT INTO ipbans (ip) VALUES (?)", *banIP, "ipban added: %q\n")
+		execBan(ctx, db, db.AddIPBan, *banIP, "ipban added: %q\n")
 	case *banMac != "":
-		execBan(ctx, db, "INSERT INTO macbans (mac) VALUES (?)", *banMac, "macban added: %q\n")
+		execBan(ctx, db, db.AddMacBan, *banMac, "macban added: %q\n")
 	case *unbanIP != "":
-		execBan(ctx, db, "DELETE FROM ipbans WHERE ip = ?", *unbanIP, "ipban removed: %q\n")
+		execBan(ctx, db, db.RemoveIPBan, *unbanIP, "ipban removed: %q\n")
 	case *unbanMac != "":
-		execBan(ctx, db, "DELETE FROM macbans WHERE mac = ?", *unbanMac, "macban removed: %q\n")
+		execBan(ctx, db, db.RemoveMacBan, *unbanMac, "macban removed: %q\n")
 	case *name != "" && *pass != "":
 		upsert(ctx, db, *name, *pass, *gender)
 	default:
@@ -97,23 +97,16 @@ func upsert(ctx context.Context, db *database.DB, name, pass string, gender int)
 		fail(err)
 	}
 	if exists {
-		if _, err := db.ExecContext(ctx,
-			"UPDATE accounts SET password = ?, salt = NULL, gender = ?, banned = 0, "+
-				"loggedin = 0, SessionIP = NULL, macs = NULL WHERE name = ?",
-			sha1hex(pass), gender, name); err != nil {
+		if err := db.ResetAccountPassword(ctx, name, sha1hex(pass), gender); err != nil {
 			fail(err)
 		}
 		fmt.Printf("account %q reset (sha1, gender=%d)\n", name, gender)
 		return
 	}
-	res, err := db.ExecContext(ctx,
-		"INSERT INTO accounts (name, password, salt, gender, banned, gm, loggedin) "+
-			"VALUES (?, ?, NULL, ?, 0, 0, 0)",
-		name, sha1hex(pass), gender)
+	id, err := db.CreateAccount(ctx, name, sha1hex(pass), gender)
 	if err != nil {
 		fail(err)
 	}
-	id, _ := res.LastInsertId()
 	fmt.Printf("account %q created (id=%d, sha1, gender=%d)\n", name, id, gender)
 }
 
@@ -136,11 +129,10 @@ func showAccount(ctx context.Context, db *database.DB, name string) {
 }
 
 func delAccount(ctx context.Context, db *database.DB, name string) {
-	res, err := db.ExecContext(ctx, "DELETE FROM accounts WHERE name = ?", name)
+	n, err := db.DeleteAccountByName(ctx, name)
 	if err != nil {
 		fail(err)
 	}
-	n, _ := res.RowsAffected()
 	fmt.Printf("account %q deleted (%d rows)\n", name, n)
 }
 
@@ -151,8 +143,8 @@ func listBanRules(ctx context.Context, db *database.DB) {
 	if err != nil {
 		fail(err)
 	}
-	var macs []string
-	if err := db.SelectContext(ctx, &macs, "SELECT mac FROM macbans"); err != nil {
+	macs, err := db.BannedMacs(ctx)
+	if err != nil {
 		fail(err)
 	}
 	fmt.Printf("ipbans: %d\n", len(ips))
@@ -165,8 +157,9 @@ func listBanRules(ctx context.Context, db *database.DB) {
 	}
 }
 
-func execBan(ctx context.Context, db *database.DB, q, arg, okFmt string) {
-	if _, err := db.ExecContext(ctx, q, arg); err != nil {
+// execBan runs one ban-list mutation and reports the result.
+func execBan(ctx context.Context, db *database.DB, op func(context.Context, string) error, arg, okFmt string) {
+	if err := op(ctx, arg); err != nil {
 		fail(err)
 	}
 	fmt.Printf(okFmt, arg)

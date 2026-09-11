@@ -6,9 +6,9 @@ import (
 	"encoding/binary"
 	"fmt"
 	"strconv"
-	"time"
 
 	"GMS/internal/database"
+	"GMS/internal/packet"
 	"GMS/internal/protocol"
 )
 
@@ -174,83 +174,23 @@ func ServerStatusPacket(status int) []byte {
 // ---- P2.4: character list / create / delete / gender packets ----
 // Java sources: LoginPacket.getCharList / addCharEntry / addNewCharEntry /
 // charNameResponse / deleteCharResponse / getGenderChanged +
-// PacketHelper.addCharStats / addCharLook, and MaplePacketCreator.serverNotice
-// (the login "notice dialog" replies).
-
-// addCharStats ports PacketHelper.addCharStats: int id + 13-byte padded name
-// + byte gender + byte skin + int face + int hair + 24 zero bytes + byte
-// level + short job + 8 shorts (str/dex/int/luk/hp/maxhp/mp/maxmp,
-// PlayerStats.connectData) + short ap + short sp + int exp + short fame +
-// int 0 (gachapon exp) + long time + int map + byte spawnpoint.
-func addCharStats(w *protocol.Writer, c *database.Character) {
-	w.Int(int32(c.ID))
-	w.AsciiStringMax(c.Name, 13)
-	w.IntAsByte(c.Gender)
-	w.IntAsByte(c.SkinColor)
-	w.Int(int32(c.Face))
-	w.Int(int32(c.Hair))
-	w.Zero(24)
-	w.IntAsByte(c.Level)
-	w.Short(c.Job)
-	w.Short(c.Str)
-	w.Short(c.Dex)
-	w.Short(c.Int)
-	w.Short(c.Luk)
-	w.Short(c.HP)
-	w.Short(c.MaxHP)
-	w.Short(c.MP)
-	w.Short(c.MaxMP)
-	w.Short(c.AP)
-	w.Short(remainingSP(c))
-	w.Int(int32(c.Exp))
-	w.Short(c.Fame)
-	w.Int(0)
-	w.Long(packetTimeNow())
-	w.Int(int32(c.Map))
-	w.IntAsByte(c.Spawnpoint)
-}
-
-// remainingSP parses the first slot of the `sp` "0,0,0,..." column (Java
-// getRemainingSp reads sps[0]; login-phase characters have none).
-func remainingSP(c *database.Character) int {
-	// P2.4: sp column not loaded in the DAO (always "0,0,..."); keep 0.
-	return 0
-}
-
-// packetTimeNow ports PacketHelper.getTime(System.currentTimeMillis()):
-// seconds-since-epoch * 10^7 + 116444592000000000 (Windows FT offset).
-func packetTimeNow() int64 {
-	const ftUTOffset = 116444592000000000
-	return time.Now().Unix()*10000000 + ftUTOffset
-}
+// PacketHelper.addCharStats (now shared, see internal/packet) / addCharLook,
+// and MaplePacketCreator.serverNotice (the login "notice dialog" replies).
 
 // addCharLook ports PacketHelper.addCharLook(mplew, chr, mega=true,
-// channelserver=false) as used by LoginPacket.addCharEntry: byte gender +
-// byte skin + int face + byte (mega?0:1)=0 + int hair + visible-equip
-// entries + 0xFF + masked entries + 0xFF + int cWeapon + 3x int 0
-// (channelserver=false writes no pet ids).
-//
-// P2.4 simplification: the login DB surface has no inventory yet (P3),
-// so the equip maps are empty - just the two 0xFF markers and cWeapon 0.
+// channelserver=false) as used by LoginPacket.addCharEntry. The layout now
+// lives in packet.AddCharLook (shared with the channel spawn packet); the
+// P2.4 simplification stands - the equip maps are empty, so only the two 0xFF
+// markers, cWeapon 0 and the three zero pet ids are written.
 func addCharLook(w *protocol.Writer, c *database.Character) {
-	w.IntAsByte(c.Gender)
-	w.IntAsByte(c.SkinColor)
-	w.Int(int32(c.Face))
-	w.Byte(0) // mega ? 0 : 1, LoginPacket passes mega=true
-	w.Int(int32(c.Hair))
-	w.Byte(0xFF) // end of visible items (empty)
-	w.Byte(0xFF) // end of masked items (empty)
-	w.Int(0)     // cWeapon (slot -111), none equipped
-	w.Int(0)     // pet 1 (channelserver=false branch: always 0)
-	w.Int(0)     // pet 2
-	w.Int(0)     // pet 3
+	packet.AddCharLook(w, c, true)
 }
 
 // addCharEntry ports LoginPacket.addCharEntry(ranking, viewAll): stats +
 // look + trailing byte 0; job 900 (GM) gets an extra byte 2. (The ranking
 // parameter is unused in the ZEV decompile - kept faithful.)
 func addCharEntry(w *protocol.Writer, c *database.Character) {
-	addCharStats(w, c)
+	packet.AddCharStats(w, c)
 	addCharLook(w, c)
 	w.Byte(0)
 	if c.Job == 900 {
@@ -337,5 +277,34 @@ func ServerNoticeDialogPacket(message string) []byte {
 	w.Op(protocol.SendSERVERMESSAGE)
 	w.Byte(1)
 	w.MapleAsciiString(message)
+	return w.Bytes()
+}
+
+// ServerIPPacket ports Java MaplePacketCreator.getServerIP(port, clientId)
+// (P4.1, the CHAR_SELECT reply): short SERVER_IP + short 0 + 4-byte IP +
+// short port + int charId + {1, 0, 0, 0, 0}. The client disconnects from the
+// login server and reconnects to ip:port (the channel server), where it
+// starts with PLAYER_LOGGEDIN.
+func ServerIPPacket(ip [4]byte, port, charID int) []byte {
+	w := protocol.NewWriter(16)
+	w.Op(protocol.SendSERVER_IP)
+	w.Short(0)
+	w.Write(ip[:])
+	w.Short(port)
+	w.Int(int32(charID))
+	w.Write([]byte{1, 0, 0, 0, 0})
+	return w.Bytes()
+}
+
+// EnableActionsPacket ports Java MaplePacketCreator.enableActions():
+// updatePlayerStats(EMPTY_STATUPDATE, itemReaction=true, 0) degenerates to
+// short UPDATE_STATS + byte 1 + int 0 (empty mask) + short 0. The CHAR_SELECT
+// guard failure path replies with it.
+func EnableActionsPacket() []byte {
+	w := protocol.NewWriter(8)
+	w.Op(protocol.SendUPDATE_STATS)
+	w.Byte(1)
+	w.Int(0)
+	w.Short(0)
 	return w.Bytes()
 }

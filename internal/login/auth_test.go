@@ -169,6 +169,16 @@ func (f *fakeStore) InsertAutoRegisterAccount(ctx context.Context, name, passwor
 	return nil
 }
 
+// ResetAccountLogin ports the P4.1 unlockAcc fallback: clear the stale
+// loggedin state (both the side-effect record and the live map).
+func (f *fakeStore) ResetAccountLogin(ctx context.Context, id int) error {
+	f.updates["reset:"+strconvItoa(id)] = "1"
+	st := f.states[id]
+	st.LoggedIn = database.LoginNotLoggedIn
+	f.states[id] = st
+	return nil
+}
+
 // loginFlow performs the raw-hello handshake, sends one LOGIN_PASSWORD
 // packet (login, pwd, 6-byte machine code), and returns the first decrypted
 // reply body (LOGIN_STATUS or CHOOSE_GENDER).

@@ -113,6 +113,51 @@ func (s *Server) SetUsersOn(n int) { s.usersOn.Store(int64(n)) }
 // UsersOn returns the online player count (Java LoginServer.getUsersOn).
 func (s *Server) UsersOn() int { return int(s.usersOn.Load()) }
 
+// SetChannelLoad records the live player count of one channel (P4.1; Java
+// ChannelServer.getChannelLoad, swept by LoginWorker every 10 minutes - the
+// Go channel servers push on change instead). usersOn is recomputed as the
+// true player sum (Java sums the raw values before scaling).
+func (s *Server) SetChannelLoad(channel, players int) {
+	s.worldMu.Lock()
+	if s.worlds.channelLoad == nil {
+		s.worlds.channelLoad = map[int]int{}
+	}
+	s.worlds.channelLoad[channel] = players
+	total := 0
+	for _, v := range s.worlds.channelLoad {
+		total += v
+	}
+	s.worldMu.Unlock()
+	s.usersOn.Store(int64(total))
+}
+
+// displayChannelLoad ports LoginWorker's SERVERLIST scaling: factor =
+// 1200 * channels / userLimit, load = min(1200, players * factor). The Java
+// code folds the scaled value back into the shared map once per sweep (and
+// would re-scale it on the next sweep); Go computes per reply from the true
+// counts instead. A non-positive userLimit avoids the division by making
+// every non-empty channel read "full" (Java would have thrown).
+func (s *Server) displayChannelLoad() map[int]int {
+	ws := s.worldSetSnapshot()
+	n := len(ws.channelLoad)
+	if n == 0 {
+		return ws.channelLoad
+	}
+	factor := 1200.0 * float64(n)
+	if ws.userLimit > 0 {
+		factor /= float64(ws.userLimit)
+	}
+	out := make(map[int]int, n)
+	for ch, players := range ws.channelLoad {
+		load := int(float64(players) * factor)
+		if load > 1200 {
+			load = 1200
+		}
+		out[ch] = load
+	}
+	return out
+}
+
 // handleServerList ports CharLoginHandler.ServerListRequest: one
 // getServerList packet per enabled world (ascending id, mirroring the Java
 // 0..19 switch order), then EndOfServerList. The NeedsChecking gate drops
@@ -123,8 +168,9 @@ func (h handler) handleServerList(s *netw.Session) {
 		return
 	}
 	ws := h.srv.worldSetSnapshot()
+	load := h.srv.displayChannelLoad()
 	for _, w := range ws.worlds {
-		s.Write(ServerListPacket(w.ID, ws.serverName, w.State, ws.eventMessage, ws.channelLoad, ws.balloons))
+		s.Write(ServerListPacket(w.ID, ws.serverName, w.State, ws.eventMessage, load, ws.balloons))
 	}
 	s.Write(EndOfServerListPacket())
 }

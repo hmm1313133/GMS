@@ -10,6 +10,7 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -45,6 +46,11 @@ type Server struct {
 	WorldName string `toml:"world_name"`
 	// Flag bitmap of the world (Java: WorldFlag / ServerConstants worlds).
 	WorldFlag int `toml:"world_flag"`
+	// ExternalIP is the address SERVER_IP hands to clients for channel
+	// connections (Java MapleParty.IP地址; the ZEVMS default "0.0.0.0" is
+	// unusable for clients - the distribution ships a real IP, the Go
+	// default is loopback for local smoke tests).
+	ExternalIP string `toml:"external_ip"`
 	// EventScript loading list (Java: Load/服务端加载事件.ini Events=...).
 	EventScripts []string `toml:"event_scripts"`
 	// Worlds is the enabled world list. The original 079MAX2 exposes 20 GUI
@@ -154,6 +160,7 @@ func Defaults() Root {
 		Server: Server{
 			WorldName:    "GMS",
 			WorldFlag:    3,
+			ExternalIP:   "127.0.0.1",
 			EventScripts: []string{"Boats", "OrbisPQ", "ZakumBattle"},
 			// Java default: only 蓝蜗牛-style single world with 状态=1.
 			Worlds:       []World{{ID: 0, State: 1}},
@@ -274,6 +281,9 @@ func (r Root) Validate() error {
 	}
 	if r.Server.UserLimit < 0 {
 		return fmt.Errorf("server.user_limit negative: %d", r.Server.UserLimit)
+	}
+	if r.Server.ExternalIP != "" && net.ParseIP(r.Server.ExternalIP) == nil {
+		return fmt.Errorf("server.external_ip invalid: %q", r.Server.ExternalIP)
 	}
 	if r.Login.AccountsPerMac < 0 {
 		return fmt.Errorf("login.accounts_per_mac negative: %d", r.Login.AccountsPerMac)

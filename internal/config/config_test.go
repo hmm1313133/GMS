@@ -155,11 +155,29 @@ func TestValidateRejectsBadInput(t *testing.T) {
 		func() Root { c := Defaults(); c.Database.DSN = ""; return c }(),
 		func() Root { c := Defaults(); c.Log.Level = "verbose"; return c }(),
 		func() Root { c := Defaults(); c.Login.AccountsPerMac = -1; return c }(),
+		func() Root { c := Defaults(); c.Server.ExternalIP = "not-an-ip"; return c }(),
 	}
 	for i, c := range cases {
 		if err := c.Validate(); err == nil {
 			t.Fatalf("case %d must fail validation", i)
 		}
+	}
+}
+
+func TestExternalIPDefault(t *testing.T) {
+	// Java MapleParty.IP地址 defaults to the unusable 0.0.0.0; Go hands
+	// clients a loopback address for local smoke tests instead.
+	cfg := Defaults()
+	if cfg.Server.ExternalIP != "127.0.0.1" {
+		t.Fatalf("external ip = %q, want 127.0.0.1", cfg.Server.ExternalIP)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("default external ip must validate: %v", err)
+	}
+	// an empty value is allowed (the server falls back to loopback)
+	cfg.Server.ExternalIP = ""
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("empty external ip must validate: %v", err)
 	}
 }
 

@@ -1,15 +1,18 @@
 package main
 
 import (
+	"context"
 	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
 
+	"GMS/internal/channel"
 	"GMS/internal/config"
 	"GMS/internal/database"
 	"GMS/internal/login"
 	"GMS/internal/wzs"
+	"GMS/internal/world"
 )
 
 // gms is the single-binary entry point (Java gui.ZEVMS -> cmd/gms).
@@ -34,6 +37,15 @@ func main() {
 	ls.SetWorlds(login.WorldConfigFrom(cfg))
 	// P2.5: name shown in login popups (Java MapleParty.开服名字).
 	ls.SetServerName(cfg.Server.WorldName)
+	// P4.1: login -> channel handoff wiring. The login-ticket registry is the
+	// Java LoginServer.loginAuth static map (CHAR_SELECT writes it, the
+	// channel session reads it); external_ip is Java MapleParty.IP地址.
+	registry := world.NewLoginRegistry()
+	ls.SetRegistry(registry)
+	if err := ls.SetExternalIP(cfg.Server.ExternalIP); err != nil {
+		lg.Warn("invalid server.external_ip, falling back to loopback", "err", err, "ip", cfg.Server.ExternalIP)
+		_ = ls.SetExternalIP("127.0.0.1")
+	}
 
 	// P2.2: account DB for the login flow. When the DB is unreachable we
 	// still serve the P1 smoke path (hello/PING) and LOGIN_PASSWORD answers
@@ -45,6 +57,18 @@ func main() {
 		defer db.Close()
 		ls.SetStore(db)
 		lg.Info("database connected")
+
+		// P3.5: drop tables (Java server.life.MapleMonsterInformationProvider
+		// reads them). Only the counts are logged here - the caching provider
+		// (internal/life) is wired into the kill/drop path in P4.3. The rows
+		// come from the 079MAX2 database, not from the wz files
+		// (docs/SESSION_STATE.md §P3.5).
+		mobs, rows, globals, derr := db.DropStats(context.Background())
+		if derr != nil {
+			lg.Warn("drop tables unreadable", "err", derr)
+		} else {
+			lg.Info("drop tables loaded", "rows", rows, "monsters", mobs, "global", globals)
+		}
 	}
 
 	// P3.3: wz data (Java net.sf.odinms.wzpath). A missing/partial export is
@@ -78,9 +102,34 @@ func main() {
 		os.Exit(1)
 	}
 
+	// P4.1: channel servers (Java ChannelServer.newInstance(1..N), ports
+	// 7574+channel). They share the single process, so "registering to the
+	// world" is direct wiring: port lookup for CHAR_SELECT + load reporting
+	// for SERVERLIST (Java LoginServer.addChannel / LoginWorker).
+	chs := channel.New(channel.ConfigFrom(cfg), lg)
+	// P4.2: character rows for PLAYER_LOGGEDIN (Java loadCharFromDB). With the
+	// DB down the field session still gets hello/PING but PLAYER_LOGGEDIN
+	// closes the connection (mirrors the login-degraded mode).
+	if db != nil {
+		chs.SetStore(db)
+	}
+	ls.SetChannelPortLookup(func(ch int) (int, bool) {
+		cs := chs.Channel(ch)
+		if cs == nil {
+			return 0, false
+		}
+		return cs.Port(), true
+	})
+	chs.SetLoadReporter(ls.SetChannelLoad)
+	if err := chs.Start(); err != nil {
+		lg.Error("channel server failed", "err", err)
+		os.Exit(1)
+	}
+
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 	<-sig
 	lg.Info("shutting down")
+	chs.Stop()
 	ls.Stop()
 }

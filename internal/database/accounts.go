@@ -1,113 +1,131 @@
 package database
 
+// Account DAO (Java client/MapleClient login surface), on GORM.
+
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
+
+	"gorm.io/gorm"
 )
 
-// Account is the DAO model for the A-class table `accounts` (079-max2).
-// It only exposes the columns the login server needs; P2.2 will add login
-// crypto helpers, and P5 will extend the game-side account fields.
+// Account is the DAO model for the `accounts` table (079-max2).
+//
+// It only exposes the columns the login server needs; P5 will extend the
+// game-side account fields. Nullable columns keep sql.NullString so the
+// "never set" and "set to empty" cases stay distinguishable - GORM scans and
+// writes them natively.
+// NOTE: no `default:` tags on written models. GORM omits zero-valued fields
+// that carry one from INSERT/UPDATE, so `gender = 0` would silently become
+// the column default 10. The schema (sqliteSchema / migrations/*.sql) is the
+// single source of defaults; the DAOs write every field explicitly.
 type Account struct {
-	ID             int            `db:"id"`
-	Name           string         `db:"name"`
-	Password       string         `db:"password"`
-	Salt           sql.NullString `db:"salt"`
-	SecondPassword sql.NullString `db:"2ndpassword"`
-	Salt2          sql.NullString `db:"salt2"`
-	LoggedIn       int            `db:"loggedin"`
-	Banned         int            `db:"banned"`
-	BanReason      sql.NullString `db:"banreason"`
-	GM             int            `db:"gm"`
-	Gender         int            `db:"gender"`
-	SessionIP      sql.NullString `db:"SessionIP"`
-	Macs           sql.NullString `db:"macs"`
+	ID             int            `gorm:"primaryKey;column:id;autoIncrement"`
+	Name           string         `gorm:"column:name;not null"`
+	Password       string         `gorm:"column:password;not null"`
+	Salt           sql.NullString `gorm:"column:salt"`
+	SecondPassword sql.NullString `gorm:"column:2ndpassword"` // digit-leading identifier
+	Salt2          sql.NullString `gorm:"column:salt2"`
+	LoggedIn       int            `gorm:"column:loggedin;not null"`
+	Banned         int            `gorm:"column:banned;not null"`
+	BanReason      sql.NullString `gorm:"column:banreason"`
+	GM             int            `gorm:"column:gm;not null"`
+	Gender         int            `gorm:"column:gender;not null"`
+	SessionIP      sql.NullString `gorm:"column:SessionIP"`
+	Macs           sql.NullString `gorm:"column:macs"`
 	// Email is only written by auto-registration (P2.5 AutoRegister: the
 	// distribution inserts a placeholder address); read for schema fidelity.
-	Email          sql.NullString `db:"email"`
+	Email sql.NullString `gorm:"column:email"`
 }
+
+// TableName pins the table name (GORM would otherwise pluralise to
+// "accounts" from Account - right here, but wrong for e.g. IPBan).
+func (Account) TableName() string { return "accounts" }
 
 // Login states (Java MapleClient constants, column `loggedin`).
 const (
-	LoginNotLoggedIn     = 0
-	LoginServerTransit   = 1
-	LoginLoggedIn        = 2
-	LoginWaiting         = 3
-	CashShopTransition   = 4
-	LoginCSLoggedIn      = 5
-	ChangeChannel        = 6
+	LoginNotLoggedIn   = 0
+	LoginServerTransit = 1
+	LoginLoggedIn      = 2
+	LoginWaiting       = 3
+	CashShopTransition = 4
+	LoginCSLoggedIn    = 5
+	ChangeChannel      = 6
 )
 
-// GetAccountByName loads one account by login name.
+// GetAccountByName loads one account by login name (nil, nil when absent).
 func (db *DB) GetAccountByName(ctx context.Context, name string) (*Account, error) {
 	var a Account
-	// `2ndpassword` backticked: SQLite identifiers may not start with a digit
-	// and MySQL natively accepts backticks - one query serves both drivers.
-	q := "SELECT id, name, password, salt, `2ndpassword`, salt2, loggedin, " +
-		"banned, banreason, gm, gender, SessionIP, macs, email " +
-		"FROM accounts WHERE name = ?"
-	if err := db.GetContext(ctx, &a, q, name); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil, nil
-		}
+	err := db.WithContext(ctx).Where("name = ?", name).Take(&a).Error
+	if isNotFound(err) {
+		return nil, nil
+	}
+	if err != nil {
 		return nil, fmt.Errorf("database: get account %q: %w", name, err)
 	}
 	return &a, nil
 }
 
-// GetAccountState loads the live login state / lastlogin for an account
+// AccountState loads the live login state / lastlogin for an account
 // (Java MapleClient.getLoginState, incl. the 20s transition timeout).
 type AccountState struct {
-	LoggedIn  int        `db:"loggedin"`
-	LastLogin sql.NullTime `db:"lastlogin"`
+	LoggedIn  int          `gorm:"column:loggedin"`
+	LastLogin sql.NullTime `gorm:"column:lastlogin"`
 }
 
 // GetAccountState reads loggedin/lastlogin for the double-login check.
+// A missing account yields the zero value (Java read it off a row that must
+// exist by then, so this stays a silent "not logged in").
 func (db *DB) GetAccountState(ctx context.Context, id int) (AccountState, error) {
 	var st AccountState
-	err := db.GetContext(ctx, &st,
-		`SELECT loggedin, lastlogin FROM accounts WHERE id = ?`, id)
-	if errors.Is(err, sql.ErrNoRows) {
-		return st, nil
-	}
+	err := db.WithContext(ctx).Model(&Account{}).
+		Select("loggedin, lastlogin").
+		Where("id = ?", id).
+		Scan(&st).Error
 	if err != nil {
 		return st, fmt.Errorf("database: get account state %d: %w", id, err)
 	}
 	return st, nil
 }
 
+// accountUpdates is the shared "UPDATE accounts ... WHERE id = ?" builder.
+func (db *DB) accountUpdates(ctx context.Context, id int, values map[string]any) error {
+	if err := db.WithContext(ctx).Model(&Account{}).
+		Where("id = ?", id).Updates(values).Error; err != nil {
+		return fmt.Errorf("database: update account %d: %w", id, err)
+	}
+	return nil
+}
+
 // UpdateLoginState ports Java MapleClient.updateLoginState(newstate, SessionID):
 // loggedin + SessionIP + lastlogin=CURRENT_TIMESTAMP (SessionIP untouched
 // when sessionIP is empty - the Java null branch).
+//
+// CURRENT_TIMESTAMP stays un-parenthesised: SQLite rejects the MySQL-only
+// CURRENT_TIMESTAMP() form.
 func (db *DB) UpdateLoginState(ctx context.Context, id int, newstate int, sessionIP string) error {
-	var err error
+	values := map[string]any{
+		"loggedin":  newstate,
+		"lastlogin": gorm.Expr("CURRENT_TIMESTAMP"),
+	}
 	if sessionIP != "" {
-		_, err = db.ExecContext(ctx,
-			`UPDATE accounts SET loggedin = ?, SessionIP = ?, lastlogin = CURRENT_TIMESTAMP WHERE id = ?`,
-			newstate, sessionIP, id)
-	} else {
-		_, err = db.ExecContext(ctx,
-			`UPDATE accounts SET loggedin = ?, lastlogin = CURRENT_TIMESTAMP WHERE id = ?`,
-			newstate, id)
+		values["SessionIP"] = sessionIP
 	}
-	if err != nil {
-		return fmt.Errorf("database: update login state %d: %w", id, err)
-	}
-	return nil
+	return db.accountUpdates(ctx, id, values)
 }
 
 // UpdatePasswordSHA1 ports Java MapleClient.updatePasswordHashtosha1: after a
 // legacy/$H$ or salted-SHA-512 login succeeds, the hash is upgraded to plain
 // SHA-1 with salt cleared (password = SHA-1, salt = NULL).
+//
+// The nil value is what makes GORM emit `salt = NULL` (a Go empty string
+// would store '').
 func (db *DB) UpdatePasswordSHA1(ctx context.Context, id int, password string) error {
-	if _, err := db.ExecContext(ctx,
-		`UPDATE accounts SET password = ?, salt = NULL WHERE id = ?`,
-		password, id); err != nil {
-		return fmt.Errorf("database: update password %d: %w", id, err)
-	}
-	return nil
+	return db.accountUpdates(ctx, id, map[string]any{
+		"password": password,
+		"salt":     nil,
+	})
 }
 
 // UnbanAccount ports Java MapleClient.unban (banned == -1 auto-unban on
@@ -115,37 +133,84 @@ func (db *DB) UpdatePasswordSHA1(ctx context.Context, id int, password string) e
 // expression - MySQL evaluates to 0); we keep the *intent* and also fix the
 // column set.
 func (db *DB) UnbanAccount(ctx context.Context, id int) error {
-	if _, err := db.ExecContext(ctx,
-		`UPDATE accounts SET banned = 0, banreason = '' WHERE id = ?`, id); err != nil {
-		return fmt.Errorf("database: unban %d: %w", id, err)
-	}
-	return nil
+	return db.accountUpdates(ctx, id, map[string]any{
+		"banned":    0,
+		"banreason": "",
+	})
 }
 
 // UpdateAccountMac ports Java MapleClient.updateMacs (stores the 6-byte
 // machine code as a dash-separated hex string; skipped for all-zero MACs).
 func (db *DB) UpdateAccountMac(ctx context.Context, id int, macData string) error {
-	if _, err := db.ExecContext(ctx,
-		`UPDATE accounts SET macs = ? WHERE id = ?`, macData, id); err != nil {
-		return fmt.Errorf("database: update mac %d: %w", id, err)
-	}
-	return nil
+	return db.accountUpdates(ctx, id, map[string]any{"macs": macData})
 }
 
 // UpdateAccountGender ports Java MapleClient.updateGender (SET_GENDER flow).
 func (db *DB) UpdateAccountGender(ctx context.Context, id int, gender int) error {
-	if _, err := db.ExecContext(ctx,
-		`UPDATE accounts SET gender = ? WHERE id = ?`, gender, id); err != nil {
-		return fmt.Errorf("database: update gender %d: %w", id, err)
+	return db.accountUpdates(ctx, id, map[string]any{"gender": gender})
+}
+
+// ResetAccountLogin ports the MapleClient.unlockAcc fallback (Java:
+// "UPDATE accounts SET loggedin = 0 WHERE name = ?"): a double login was
+// detected but no live session holds the account any more (crashed or
+// force-killed client), so the stale loggedin state is cleared and the next
+// attempt succeeds. Only loggedin is touched - lastlogin/SessionIP stay as
+// the dead session left them, like the Java statement.
+func (db *DB) ResetAccountLogin(ctx context.Context, id int) error {
+	return db.accountUpdates(ctx, id, map[string]any{"loggedin": LoginNotLoggedIn})
+}
+
+// CreateAccount inserts a login account (tools/addaccount -pass, the smoke
+// helper). passwordSHA1 is plain SHA-1 hex with salt cleared, i.e. what the
+// login chain expects from a fresh row. Returns the new id.
+func (db *DB) CreateAccount(ctx context.Context, name, passwordSHA1 string, gender int) (int, error) {
+	a := &Account{
+		Name:     name,
+		Password: passwordSHA1,
+		Gender:   gender,
+	}
+	if err := db.WithContext(ctx).Create(a).Error; err != nil {
+		return 0, fmt.Errorf("database: create account %q: %w", name, err)
+	}
+	return a.ID, nil
+}
+
+// ResetAccountPassword re-arms an existing account: new SHA-1 password, salt
+// cleared, ban and login state wiped (tools/addaccount reset semantics).
+//
+// The nil values are what makes GORM emit `col = NULL` (an empty Go string
+// would store '').
+func (db *DB) ResetAccountPassword(ctx context.Context, name, passwordSHA1 string, gender int) error {
+	err := db.WithContext(ctx).Model(&Account{}).Where("name = ?", name).Updates(map[string]any{
+		"password":  passwordSHA1,
+		"salt":      nil,
+		"gender":    gender,
+		"banned":    0,
+		"loggedin":  0,
+		"SessionIP": nil,
+		"macs":      nil,
+	}).Error
+	if err != nil {
+		return fmt.Errorf("database: reset account %q: %w", name, err)
 	}
 	return nil
 }
 
+// DeleteAccountByName removes an account and reports the number of deleted
+// rows (0 = no such account).
+func (db *DB) DeleteAccountByName(ctx context.Context, name string) (int64, error) {
+	res := db.WithContext(ctx).Where("name = ?", name).Delete(&Account{})
+	if res.Error != nil {
+		return 0, fmt.Errorf("database: delete account %q: %w", name, res.Error)
+	}
+	return res.RowsAffected, nil
+}
+
 // AccountExists reports whether a login name already exists.
 func (db *DB) AccountExists(ctx context.Context, name string) (bool, error) {
-	var one int
-	err := db.GetContext(ctx, &one, `SELECT 1 FROM accounts WHERE name = ? LIMIT 1`, name)
-	if errors.Is(err, sql.ErrNoRows) {
+	var a Account
+	err := db.WithContext(ctx).Select("id").Where("name = ?", name).Take(&a).Error
+	if isNotFound(err) {
 		return false, nil
 	}
 	if err != nil {

@@ -4,6 +4,9 @@
 [server]
 world_name = "GMS"
 world_flag = 3
+# 客户端连频道服用的对外 IP（Java MapleParty.IP地址，原版默认 0.0.0.0 客户端不可用）。
+# 本机联调用 127.0.0.1；对外部署填服务器真实 IP。
+external_ip = "127.0.0.1"
 # 对应 Load/服务端加载事件.ini 的 Events=
 event_scripts = ["Boats", "OrbisPQ", "ZakumBattle"]
 # 世界列表（原版 079MAX2 是 GUI 上的 20 个世界开关：蓝蜗牛=0..花蘑菇=19；
@@ -35,6 +38,7 @@ allow_duplicate_ip = true
 
 [channel]
 host = "0.0.0.0"
+# 频道 1 的端口（Java 固定公式 7574 + channel；频道 i 监听 7574+i，即 7575..7579）。
 port = 7575            # ZEV.Port
 count = 5              # ZEV.Count
 cashshop_port = 8600
