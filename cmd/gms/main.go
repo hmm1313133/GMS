@@ -107,6 +107,10 @@ func main() {
 	// world" is direct wiring: port lookup for CHAR_SELECT + load reporting
 	// for SERVERLIST (Java LoginServer.addChannel / LoginWorker).
 	chs := channel.New(channel.ConfigFrom(cfg), lg)
+	// P4.3b: Map.wz map data for the channel maps (Java MapleMapFactory's
+	// static source provider, one per channel). A nil root - the wz-degraded
+	// startup above - only warns: maps then load as bare instances.
+	chs.SetWZ(wzRoot)
 	// P4.2: character rows for PLAYER_LOGGEDIN (Java loadCharFromDB). With the
 	// DB down the field session still gets hello/PING but PLAYER_LOGGEDIN
 	// closes the connection (mirrors the login-degraded mode).

@@ -1,12 +1,16 @@
 // Package mapp is the map engine (Java server.maps). P4.2 brought the minimal
 // instance the channel server needs to attach a player: an id and a player
 // set. P4.3 adds the spawn/despawn broadcast (Java MapleMap.addPlayer /
-// removePlayer -> spawnPlayerMapobject / removePlayerFromMap). Footholds,
-// life/monsters, portals and the view-range filtering grow with P4.4+/P6.
+// removePlayer -> spawnPlayerMapobject / removePlayerFromMap). P4.3b adds the
+// Map.wz data layer: MapData (portals, footholds, life spawns and the info
+// flags) plus the Factory that loads and caches it. Warp/portal behaviour and
+// monster spawning are P4.4/P6; Map itself only carries the data.
 //
 // Java sources (see docs/FILETRACK.md):
 //   - server/maps/MapleMap        -> Map
-//   - server/maps/MapleMapFactory -> Factory (arrives with P4.3 map data)
+//   - server/maps/MapleMapFactory -> Factory (P4.3b, factory.go)
+//   - server/MaplePortal          -> Portal (P4.3b, portal.go/mapdata.go)
+//   - server/maps/MapleFootholdTree -> FootholdTree (P4.3b, foothold.go)
 package mapp
 
 import "sync"
@@ -41,10 +45,14 @@ type Player interface {
 }
 
 // Map is one channel's instance of a map id (Java MapleMap). P4.3 keeps the
-// player set and the spawn/despawn broadcasts; life / drops / footholds
-// arrive later.
+// player set and the spawn/despawn broadcasts; P4.3b attaches the loaded
+// Map.wz data (portals, footholds, life). Warp/portal behaviour, monsters and
+// drops arrive later.
 type Map struct {
 	id int
+	// data is the loaded Map.wz image, nil for a map that has no data (no wz
+	// wired, a missing image, or a Factory that is still cold).
+	data *MapData
 
 	mu      sync.RWMutex
 	players map[int]Player
@@ -55,8 +63,23 @@ func New(id int) *Map {
 	return &Map{id: id, players: map[int]Player{}}
 }
 
+// NewWithData creates a map instance backed by loaded Map.wz data (Java
+// MapleMapFactory.getMap: `new MapleMap(mapid, channel, returnMap, monsterRate)`
+// plus the portals/footholds/life it fills in). data may be nil - the map is
+// then a bare instance, which is the degraded mode of a server without wz.
+func NewWithData(id int, data *MapData) *Map {
+	m := New(id)
+	m.data = data
+	return m
+}
+
 // ID returns the map id (Java getMapId).
 func (m *Map) ID() int { return m.id }
+
+// Data returns the map's loaded Map.wz data, nil when the map has none (Java
+// MapleMap holds the same content in its own fields; Go keeps it in one shared
+// read-only MapData).
+func (m *Map) Data() *MapData { return m.data }
 
 // AddPlayer ports the player-tracking and broadcast half of Java
 // MapleMap.addPlayer:

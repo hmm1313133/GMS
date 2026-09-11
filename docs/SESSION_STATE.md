@@ -3,7 +3,7 @@
 > 用途：跨会话恢复工作现场。加载本文件后可从"断点"继续重构。
 > 配套：PLAN.md（总方案）、PROGRESS.md（阶段勾选）、FILETRACK.md（533 文件级状态）。
 
-保存时间：2026-09-12（P4.5 聊天收口：公屏/表情/私聊/找人 + 坐标竞态修正；关键字屏蔽查证后判为"原版无此功能"不做；P4.5b configvalues 开关层）
+保存时间：2026-09-12（P4.3b 地图实例数据：Map.wz 的 info/portal/foothold/life 装载 + Factory；P4.5 聊天与 P4.5b 开关层已提交 c75f0a4/44f164c）
 工作目录：`I:\GMS`（go module 名 `GMS`，Go 1.25.5）
 目标：将 `I:\Zevms`（079MAX2/ZEVMS Java）重构为 Go，按 P0->P11 推进。
 
@@ -25,6 +25,31 @@ go test  ./...                                   ✅ 全绿
 - `internal/database`：SQLite 集成测试 4 组（TestSQLiteAccountChain + TestSQLiteBanAndAutoRegister + P3.5 drops 4 个 + **GORM 迁移新增 characters_test 2 个**）+ 可选 MySQL 集成（GMS_TEST_DB_DSN）。
 - **live 验证全过（GORM 后）**：MySQL 只读冒烟（账号/角色真表/掉落 900/14243/16）+ SQLite 完整握手（auto-register → CHOOSE_GENDER → SERVERLIST → SERVERSTATUS → CHARLIST）。
 - ✅ **`go build ./...`（全包）恢复全绿**：本会话把 pre-refactor 残留改名隔离（`main.go`→`_legacy_main.go`、`handing`→`_handing`、`client`→`_client`；下划线前缀是 Go 工具链官方忽略机制，**文件内容原封未动、可随时改回**，比原计划的 cleanup-oldlayout.ps1 删除方案更保守）。`go mod tidy` 随之首次跑通，gnet/zap/properties/maplelib 等垃圾依赖从 go.mod 清除。
+
+### 断点 O 会话（2026-09-12，P4.3b 地图实例数据 Map.wz）
+
+1. **范围**：PLAN 的 `GMS-P4.3b`「地图实例数据（Map.wz `info`/`life`/`foothold`/`portal` = Java `MapleMapFactory`）」。**只做数据 + 查询层**：不做出图/传送行为、不生成怪物。
+2. **`internal/mapp` 新 4 文件**：
+   - `mapdata.go`：`Portal`/`Foothold`/`FootholdTree`/`LifeSpawn`/`MapData` + 访问器（`Portals/Footholds/Life/Mobs/NPCs`）；常量 `PortalMap=2`/`PortalDoor=6`/`firstDoorPortal=128`/`NoTargetMap=999999999`；`FieldLimitType` 全 15 位 + `Check`。
+   - `portal.go`：`loadPortals` + `Portal`/`PortalByName`/`FindClosestSpawnPoint`。
+   - `foothold.go`：`loadFootholds` + `FindBelow`/`CalcPointBelow`/`compareFoothold`/`interpolatedY`。
+   - `factory.go`：`MapImagePath`/`LoadData`/`loadInfo`/`loadLife`/`Factory`。
+3. **必做且最易漏：`info/link`**。Map.wz 的 4260 张图里 **1152 张（27%）是只含 `info` + `link` 的桩**（105090321 = 1135 字节，本体在 105090320）。Java 用 `getIntConvert` 读 **string** 形态的 link、**只跳一跳**、用目标图构建。Go 保真：`MapData.ID` = 请求的 id、`ImageID` = 实际用的图；`link==0`/`link==自身`/目标是 link → 只告警（真实数据里 0 条链式 link）。**不解析 link 会让 27% 的地图变成空图**。
+4. **portal id 规则（勿按节点名猜）**：`pt==6`（DOOR_PORTAL）**丢掉 wz 节点名**，从 **128** 起按文档序编号；其余 `Integer.parseInt(节点名)`。map 100000000 的 6 个 `tp`（节点名 28..33）真实 id 是 **128..133**，`Portal(28..33)` == nil。传送包里的 id 是**一个 byte**（`getWarpToMap` 写 `write(spawnPoint)`），128..133 正好装得下。
+5. **foothold：Java 的四叉树从不细分**（`lBound/uBound` 从 (0,0) 按 min/max 扩张 ⇒ 每个 foothold 都过根节点包含判定；实测 map0 13/13、map1 315/315 全在根层）⇒ Go 用**文档序平坦切片**。`FindBelow` 四处保真：
+   - `x1 <= x <= x2 && x1 != x2`（**墙永不当地板**；真实数据里 410/359848 条 foothold 是 `x1 > x2` 存的，Java 永远匹配不到 —— Go 保留）；
+   - `compareTo` 是**单边**比较器（`y2<o.y1 → -1`、`y1>o.y2 → 1`、否则 0），用 `sort.SliceStable` 复现 TimSort 的 tie 顺序（文档序）；
+   - 斜面插值 `s1=|y2-y1|`、`s2=|x2-x1|`、`s4=|x-x1|`、`s5=cos(atan(s2/s1))*(s4/cos(atan(s1/s2)))`、`calcY = y2<y1 ? y1-(int)s5 : y1+(int)s5` —— **连 double 运算与截断都照搬**：45° 段在中点算出 `49.99999999999999289` ⇒ 截断成 **49**（比几何值低 1 像素），Java 同样如此，别"顺手四舍五入"；
+   - 先按 y 跳过"地板在查询点上方"的候选（y 向下增长）。
+6. **`life`**：`type` 大小写不敏感（`m`/`n`，其它跳过+告警）；`mobTime` **保持秒**，`getInt("mobTime", life, 0)` ⇒ **缺节点 = 0 = 立即重生**，数据里的 `-1` 才是"只刷一次"（1857 条怪没有该节点，别把缺节点当 -1）；`hide` 仅对 NPC；`team` 本数据 0 条；地图 910000000 屏蔽 9310059/9310022 两个向导 NPC；`f` 缺失 ⇒ `HasF=false`。**怪物出生点 = `calcPointBelow(X,Y).y - 1`（斜面取插值，不是 `Y1-1`）**；无 foothold 时 Java NPE，Go 保留原始 (x,y) + 告警。
+7. **Java bug 不移植**：`MapleMapFactory:146-147`（与 `:329-330`）把 `addMonsterSpawn` **调用两次** —— 会让 `monsterSpawn` 翻倍、`maxRegularSpawn` 失真、重生时间减半（交流源码只有一次）。`destroyMap`（返回反转 + 无条件移除）不移植。
+8. **接线**：`mapp.Map` 加 `data *MapData` + `NewWithData`（`New(id)` 保留，P4.3/P4.5 的 4 个既有测试未动）；`channel.Server` 加 **可空** `SetWZ(root *wzs.Root)`（nil / 无 Map.wz 只告警，地图退化为裸实例，不阻断启动）+ `mapData(id)`，`ChannelServer.Map(id)` 首次创建时装载；`cmd/gms` 在 `channel.New` 后 `chs.SetWZ(wzRoot)`。
+9. **有意偏差（已注记）**：`Factory` 缓存 **`MapData`**（Java 缓存 `MapleMap` 实例；`*mapp.Map` 仍按频道各自持有）+ **失败负缓存**（Java 每次 getMap 都重读、无负缓存）；`PortalByName` 用文档序（Java 是 HashMap 序）；`Factory` 每 Server 一个（Java 每频道一个，共享不可变数据是安全的）；不建模 `getMap(id, respawns, npcs, reactors)` 的三个开关（`LoadData` 恒读 mobRate 与全部 life，NPC 过滤走 `NPCs()`）。
+10. **测试**：`internal/mapp` 新增 16 个（合计 20）、`internal/channel` +1；手写夹具 3 个共 3052 字节在 `internal/mapp/testdata/wz/Map.wz/Map/Map9/`（link 桩 + 目标图 + 裸图）。**算法类断言用夹具自算**（墙/斜面/平手/上斜面/出生点），大图只断言结构性不变量（"返回的 foothold 确实横跨 x 且不在查询点上方"、"从 foothold 自身 Y1 往上 1 像素必须命中它"），避免把推导出的具体 id 当真理。
+11. **实测规模**（一次性工具，跑完已删）：4259 张图 **0 错误**、1152 张 link 桩全部解析、406,326 条 foothold、48,456 个怪出生点 **100%** 命中 foothold（Java 的 NPE 分支在真实数据上不会触发，raw 兜底计数 0）、4133 个 NPC。
+12. **live 冒烟全过**（SQLite + 真实 `wz/`）：启动日志 `map data wired wz=Map.wz`；建角 `43333`(id19) 直连 7575 → `WARP_TO_MAP` + `SPAWN_PLAYER` 正常、**全程无 WARN/ERROR**（即 map 0 的 info/portal/foothold 解析干净）。测完 `-unlock` → 删角 0x7FFE → `-remove` 删号 → 停进程。
+13. **仍未消费的数据（下一轮入口）**：`Portal`/`ReturnMapID`/`ForcedReturnID` 还没接进登录出生点（`WARP_TO_MAP` 的 spawn 坐标仍是 (0,0) —— P4.3 的既有偏差）；`CHANGE_MAP`(0x21)/`CHANGE_MAP_SPECIAL`(0x61) 的 handler **未写**（换图仍不可用，opcode 常量在 `protocol/opcodes_gen.go` 已有）；`LifeSpawn` 等 P6 生成；`FieldLimit` 等各 handler。
+14. **范围外（确认未动）**：reactor、`MapleNodes`/platform/area、`ladderRope`（Java 全树无消费方）、地图特效（`MapleMapEffect` 根本不在加载路径里）、`back`/`tile`/`obj`/`miniMap`/`ToolTip`/`seat`/`pvp`、区域 BOSS（`addAreaBossSpawn`，15 个硬编码 + 缺 `ConfigValuesMap`）、`CreateInstanceMap`、时钟/船、`HealMap`/`DeStorymaps`、DB 驱动 `customLife`、String.wz 地图名（P3.3 已装）、portal 的 delay/hideTooltip/onlyOnce/horizontalImpact/image 与 foothold 的 forbidFallDown/force（Java 也不读）。
 
 ### 断点 N 会话（2026-09-12，P4.5 聊天 + P4.5b configvalues 开关层；提交 c75f0a4）
 
@@ -419,17 +444,14 @@ go test  ./...                                   ✅ 全绿
 
 ## 四、断点与下一步（按优先级）
 
-### 断点 N（当前）：P4.5 聊天收口，下一步 P4.3b 地图实例数据 / P4.6 NPC 交互占位
-- **P4.5 已收口**（见 §二 断点 N）：`internal/packet/chat.go`（getChatText/facialExpression/getWhisper/getWhisperReply/getFindReply(WithMap)）、`internal/channel/chat.go`（handleGeneralChat/handleFaceExpression/handleWhisper）、`internal/mapp.BroadcastRanged` + `MaxViewRangeSq`、`channel.Player.Position()/Stance()/IsGM()`，以及**跨 goroutine 坐标竞态的 `sync.RWMutex` 修正**。
-- **关键字屏蔽 = 不做**（用户拍板）：原版两个类都是死代码（jar 无引用 / ini 路径写错 / 文件不存在），文档里"abc/关键字屏蔽 表"的说法作废；`chat_filter` 配置已删。**不要再尝试实现它**，除非产品明确要一个新功能（那时要按"有意偏差"写清语义：子串匹配、跳过空词、命中静默丢弃、可热重载）。
-- **P4.5b 已做**（configvalues 开关层）：`玩家聊天开关`（关则回 `serverNotice(1, "管理员从后台关闭了聊天功能")` 并 return）与 `游戏找人开关`（关则只对 WHISPER mode 5/68 回 `dropMessage(5, "找人功能被关闭")`）转正；判据 `val > 0` = 关闭；SQLite 空表 = 全开。
-  - **尚未转正的 configvalues 开关**（下一轮可摘）：`登陆验证开关`（P4.2 跳过的 `InterServerHandler.Loggedin` 包装）、`GM 隐身/加速`、`飞天检测`（P4.4 跳过）、`聊天记录开关`（要 `FileoutputUtil` 那种文件日志，运营侧再做）。
-- **P4.3b（下一个候选）**：地图实例数据 = Java `server/maps/MapleMapFactory`，读 `Map.wz/Map/Map<i>/<mapid>.img` 的 `info`（mapName/returnMap/fieldLimit 等）/`foothold`/`life`（怪物+NPC 生成点）/`portal`（传送门）。
-  - **消费方**：传送门换图（`portal.getTarget`）、P6 的怪物/NPC 生成（`life` + `SpawnPoint`），以及 `PlayerHandler.MovePlayer` 里被跳过的坠落计数（`getFootholds().findBelow`）。
-  - **落点**：`internal/mapp` 的 `Factory`（缓存 mapid → 已解析的只读地图静态数据），`ChannelServer.Map(id)` 建实例时挂上去；wz 侧走 `internal/wzs`（P3.3 断点 G 的第 ⑤ 片）。
-  - 也可以只先解析 `portal`（换图必需）+ `info.returnMap`，`foothold`/`life` 留到 P6。
-- **P4.6（另一个候选）**：NPC 交互占位（点击 NPC 触发脚本占位，完整化在 P7 的 goja 宿主 API）。
-- **坐标已真实化**：`channel.Player` 的 `Pos` 由 MOVE_PLAYER 驱动、spawn 包带真实 pos/stance，`mapp.Player` 已暴露 `Position()`（P4.5 为视野过滤加的），`Stance` 走访问器。
+### 断点 O（当前）：P4.3b 地图实例数据已落地，下一步「换图（CHANGE_MAP）」/ P4.6 NPC 交互占位
+- **P4.3b 已收口**（见 §二 断点 O）：`internal/mapp` 的 `mapdata.go`/`portal.go`/`foothold.go`/`factory.go`（Portal/Foothold/LifeSpawn/MapData + Factory），`channel.Server.SetWZ` 接线，真实数据 4259 张图 0 错误、48,456 个怪出生点全部命中 foothold。
+- **最短的一条可见收益（推荐下一轮）**：把 `Portal`/`ReturnMapID`/`ForcedReturnID` 接进**登录出生点**，替掉 `WARP_TO_MAP` 里写死的 (0,0)：
+  - Java `MapleCharacter.loadCharFromDB:643-656`（与 `:918-932` 重复一份）的顺序是：`map = factory.getMap(mapid)` → null 则 `getMap(100000000)` → `if (map.getForcedReturnId() != 999999999) map = map.getForcedReturnMap()` → `portal = map.getPortal(initialSpawnPoint)` → **null 则 `getPortal(0)` 且 `initialSpawnPoint = 0`** → `setPosition(portal.getPosition())`。
+  - 落点：`internal/channel/login.go` 的 `loggedIn2`（现在只写 `WARP_TO_MAP` + `TEMP_STATS_RESET` + `map.AddPlayer`）与 `internal/packet/packet.go` 的 `CharInfoPacket`/`WARP_TO_MAP` 的 `spawn` 字段（现在直接写 `characters.spawnpoint`）。做完 `PROGRESS` 里 P4.3 的"spawn 包 pos 写 (0,0)"偏差即可勾掉。
+  - **注意**：`Portal(0)` 可能为 nil（Java 会 NPE），Go 要 nil 检查后回退到 (0,0)。
+- **换图 handler（第二候选，P4.3b 的下一个真消费方）**：`CHANGE_MAP(0x21)` / `CHANGE_MAP_SPECIAL(0x61)` 在 `channelHandler.OnPacket` 里**还没有分支**；Java 在 `PlayerHandler:1245-1253`（`getPortal(readMapleAsciiString())` → `enterPortal`）与 `:1255+`。`enterPortal` 的保真点：**有 `script` 的传送门永不自动换图**（else-if 结构），`tm == 999999999` = 不换图，目标图找不到 `tn` 时**静默回退到目标图的 portal 0**；换图后 `WARP_TO_MAP` 的 portal id 只有 **1 个字节**。
+- **P4.6（第三候选）**：NPC 交互占位（点击 NPC 触发脚本占位，完整化在 P7 的 goja 宿主 API）。
 - **聊天广播的两条语义别再混**（§二 断点 N.5）：公屏 = Point 重载（**有**视野过滤、**含**自己）；表情 = boolean 重载（无限视野、排除自己）；移动也是 boolean 重载（无限视野、排除自己）。
 - **P4.3 的掉落接入点已留好**：`life.NewMonsterInformationProvider(db)` → `RetrieveDrop(ctx, mobID)` / `GlobalDrop()`；`cmd/gms` 现在只打 `drop tables loaded` 统计日志（未持有 provider），届时把 provider 挂到频道服即可。掉落 roll 语义在 `MapleMap.dropFrom...`：普通掉落 `Randomizer.nextInt(999999) >= chance*rate*dropMod*…`，全局掉落 `nextInt(999999) >= chance`（**不**乘倍率），另注意全局那行 Java 反编译出的 `continent >= 0 && >= 10 && >= 100 && >= 1000` 等价于 `continent >= 1000 才跳过`
 - **P3.3 未完切片**（Item / Skill / Mob / Npc / Reactor）**按需增量补**，不要在 P4 前摊大——它们都是"需要时再搬"的纯缓存，缺哪块补哪块
@@ -484,8 +506,8 @@ I:\GMS
 │   ├── netw\    ✅ (session[+State 槽] + codec + tests)
 │   ├── world\   ✅ P4.1（registry.go：LoginServer.loginAuth/loginIPAuth 票据；find.go：World.Find 子集 + 4 测试）
 │   ├── packet\  ✅ P4.2+P4.3+P4.4+P4.5（共享层：packet.go[AddCharStats/addCharLook/CharInfoPacket/TEMP_STATS_RESET/SERVERMESSAGE/SpawnPlayerPacket/RemovePlayerFromMapPacket/MovePlayerPacket] + **chat.go[getChatText/facialExpression/getWhisper/getWhisperReply/getFindReply(WithMap)]** + rand.go[PlayerRandomStream/CRand32] + 7 测试）
-│   ├── mapp\    ✅ P4.2+P4.3+P4.5（map.go：地图实例[id + 玩家集合] + spawn/despawn 视野广播 AddPlayer/RemovePlayer/Broadcast + **BroadcastRanged（Point 重载，maxViewRangeSq 过滤，含发送者）+ MaxViewRangeSq** + Player.SendSpawnData/DespawnData/**Position()** + 4 测试；foot-hold/life/portal 地图数据留 P4.3b）
-│   ├── channel\ ✅ P4.1+P4.2+P4.3+P4.4+P4.5（server.go：多频道 7574+channel + 同源 hello + 地图注册表 + 顶号 + **P4.5b configvalues 开关装载**；players.go：PlayerStorage + World.Find 副作用 + load 回调 + CharacterTransfer 挂起表 + mapp.Player 实现 + **坐标态 RWMutex 保护**；login.go：Loggedin2 进图链；movement.go：MovePlayer；**chat.go：GeneralChat/ChangeEmotion/Whisper_Find** + 20 测试）
+│   ├── mapp\    ✅ P4.2+P4.3+P4.3b+P4.5（map.go：地图实例[id + 玩家集合 + **data *MapData**] + spawn/despawn 视野广播 AddPlayer/RemovePlayer/Broadcast + BroadcastRanged（Point 重载，maxViewRangeSq 过滤，含发送者）+ MaxViewRangeSq + Player.SendSpawnData/DespawnData/Position()；**P4.3b：mapdata/portal/foothold/factory —— MapData/Portal/FootholdTree/LifeSpawn + MapImagePath/LoadData/Factory + FieldLimitType** + testdata\wz（3 个手写夹具）+ 20 测试）
+│   ├── channel\ ✅ P4.1+P4.2+P4.3+P4.4+P4.5（server.go：多频道 7574+channel + 同源 hello + 地图注册表 + 顶号 + P4.5b configvalues 开关装载 + **P4.3b SetWZ/mapData（Map(id) 首次创建时装 Map.wz 数据）**；players.go：PlayerStorage + World.Find 副作用 + load 回调 + CharacterTransfer 挂起表 + mapp.Player 实现 + 坐标态 RWMutex 保护；login.go：Loggedin2 进图链；movement.go：MovePlayer；chat.go：GeneralChat/ChangeEmotion/Whisper_Find + 21 测试）
 │   ├── login\   ✅ P2.2+P2.3+P2.4+P2.5+P4.1 (server/packets/util/crypto/auth/worlds/chars/select/register + 测试 44 个 + testdata\golden_login.txt)
 │   ├── life\    ✅ P3.5 (drops.go：MapleMonsterInformationProvider 掉落缓存 + 6 测试)
 │   ├── dropgen\ ✅ P3.5 (chance.go/dropgen.go/sql.go：MonsterDropCreator 移植 + 8 测试)

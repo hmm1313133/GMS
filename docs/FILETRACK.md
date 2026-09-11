@@ -8,8 +8,8 @@
 | metric | value |
 |---|---|
 | java files total | 533 |
-| to migrate (TODO+ACTV) | 400 |
-| done (DONE) | 31 |
+| to migrate (TODO+ACTV) | 397 |
+| done (DONE) | 34 |
 | merged (MERG) | 48 |
 | skipped (SKIP) | 54 |
 
@@ -631,7 +631,7 @@
 | server/MapleDueyActions.java | 48 | TODO | internal/server-domain | split per file |
 | server/MapleInventoryManipulator.java | 965 | TODO | internal/server-domain | split per file |
 | server/MapleItemInformationProvider.java | 1459 | TODO | internal/server-domain | split per file |
-| server/MaplePortal.java | 21 | TODO | internal/server-domain | split per file |
+| server/MaplePortal.java | 21 | DONE | internal/mapp | P4.3b：`portal.go` 的 `PortalMap=2`/`PortalDoor=6` 常量与入口（`pn`/`pt`/`x`/`y`/`tm`/`tn`/`script`）+ `Portal`/`PortalByName`（文档序，Java 是 HashMap 序）+ `FindClosestSpawnPoint`（type 0..2 且 tm==999999999，平方距离取最近、平手留先者）；`MAP_PORTAL` 与 `DOOR_PORTAL` 在 Java 里同为 `MapleGenericPortal` 语义（`MapleMapPortal` 无差异） |
 | server/MapleShop.java | 264 | TODO | internal/server-domain | split per file |
 | server/MapleShopFactory.java | 43 | TODO | internal/server-domain | split per file |
 | server/MapleShopItem.java | 23 | TODO | internal/server-domain | split per file |
@@ -642,7 +642,7 @@
 | server/MerchItemPackage.java | 37 | TODO | internal/server-domain | split per file |
 | server/MTSCart.java | 148 | TODO | internal/server-domain | split per file |
 | server/MTSStorage.java | 385 | TODO | internal/server-domain | split per file |
-| server/PortalFactory.java | 36 | TODO | internal/server-domain | split per file |
+| server/PortalFactory.java | 36 | DONE | internal/mapp | P4.3b：`loadPortals`（`portal.go`）——属性读取 + **id 规则**：`pt==6` 忽略 wz 节点名、`nextDoorPortal` 从 **128** 起按文档序编号，其余 `Integer.parseInt(节点名)`（所以 map 100000000 的 6 个 tp 是 id 128..133，`getPortal(28..33)` 为 nil）；空 `script` 归一为空串；非数字节点名跳过+告警（Java 抛 NumberFormatException 丢整张图） |
 | server/PredictCardFactory.java | 71 | TODO | internal/server-domain | split per file |
 | server/Randomizer.java | 32 | TODO | internal/server-domain | split per file |
 | server/RandomRewards.java | 144 | TODO | internal/server-domain | split per file |
@@ -845,7 +845,7 @@
 | server/life/MonsterListener.java | 7 | TODO | internal/life |  |
 | server/life/OverrideMonsterStats.java | 44 | TODO | internal/life |  |
 | server/life/PlayerNPC.java | 245 | TODO | internal/life |  |
-| server/life/SpawnPoint.java | 105 | TODO | internal/life |  |
+| server/life/SpawnPoint.java | 105 | ACTV | internal/mapp | P4.3b：`LifeSpawn` 承载 SpawnPoint 的数据面（mobTime **秒**、`immobile`/`shouldSpawn` 的判定与重生计时留给 P6 的刷怪调度）；出生点坐标 = `calcPointBelow(X,Y).y - 1`（对齐 `MapleMap.addMonsterSpawn` 的 `--newpos.y`，斜面取插值） |
 | server/life/SpawnPointAreaBoss.java | 84 | TODO | internal/life |  |
 | server/life/Spawns.java | 16 | TODO | internal/life |  |
 | server/life/SummonAttackEntry.java | 20 | TODO | internal/life |  |
@@ -865,13 +865,13 @@
 | server/maps/FieldLimitType.java | 31 | TODO | internal/mapp |  |
 | server/maps/MapleDoor.java | 138 | TODO | internal/mapp |  |
 | server/maps/MapleDragon.java | 40 | TODO | internal/mapp |  |
-| server/maps/MapleFoothold.java | 66 | TODO | internal/mapp |  |
-| server/maps/MapleFootholdTree.java | 175 | TODO | internal/mapp |  |
+| server/maps/MapleFoothold.java | 66 | DONE | internal/mapp | P4.3b：`Foothold`（ID/X1/Y1/X2/Y2/Prev/Next）+ `IsWall()`（x1==x2）；`compareTo` 的单边比较器在 `compareFoothold`（`foothold.go`） |
+| server/maps/MapleFootholdTree.java | 175 | ACTV | internal/mapp | P4.3b：`FootholdTree` 平坦化（**Java 的四叉树永不细分**——lBound/uBound 从 (0,0) 起按 min/max 扩张，每个 foothold 都通过根节点包含判定，实测 13/13 与 315/315 都在根层）+ `FindBelow`（`x1<=x<=x2 && x1!=x2` 过滤、单边 compareTo 的 `sort.SliceStable`、斜面插值含 double 截断）+ `CalcPointBelow`；`insert`/`findWall`/`findWallR`/`checkRelevantFH` 待消费方（P6 的墙与掉落物）再迁 |
 | server/maps/MapleGenericPortal.java | 119 | TODO | internal/mapp |  |
 | server/maps/MapleLove.java | 54 | TODO | internal/mapp |  |
 | server/maps/MapleMap.java | 4359 | ACTV | internal/mapp | P4.2 玩家集合（addPlayer/removePlayer 的 mapobjects 部分 + MapFactory 惰性建图）；P4.3 spawn/despawn 广播（addPlayer → 对同图其他人 spawnPlayerMapobject + 新人对每个老玩家 + 自身；removePlayer → 广播 removePlayerFromMap；broadcastMessage(source, pkt, false) 的 source 排除）；P4.4 movePlayer 由 `channel.MovePlayer` 的广播 + Player.ApplyMovement 承担（Map.movePlayer 只重设坐标/刷新物件可见性，无物件时为恒等）；**P4.5：`BroadcastRanged` = `broadcastMessage(packet, rangedFrom)` Point 重载（`distanceSq <= GameConstants.maxViewRangeSq` = 10000²，source=null 含发送者），另导出常量 `MaxViewRangeSq`**；foot-hold/life/portal/reactor/掉落/地图特化（送货/月妙等）待 P4.3b/P6 |
 | server/maps/MapleMapEffect.java | 35 | TODO | internal/mapp |  |
-| server/maps/MapleMapFactory.java | 775 | TODO | internal/mapp |  |
+| server/maps/MapleMapFactory.java | 775 | ACTV | internal/mapp | P4.3b：`MapImagePath`（= `getMapName`，`Map/Map<id/1e8>/%09d.img`）+ `LoadData`/`loadInfo`（info 的 returnMap/*quirk* 910000000→自身、forcedReturn、fieldLimit、mobRate、town/fly/everlast/personalShop、timeLimit、fixedMobCapacity、createMobInterval、onUserEnter/onFirstUserEnter、**顶层 clock 节点**）+ **`info/link` 一跳解析**（4260 张图里 1152 张是桩）+ portal/foothold/life 三段 + `Factory`（缓存 MapData + 失败负缓存，见下）；**不移植**：`addMonsterSpawn` 的双调用 bug（:146-147/:329-330）、`destroyMap` 的返回反转（:230-242）、`CreateInstanceMap`/`DeStorymaps`/`instanceMap`、`MapleNodes`/`loadNodes`(:723-802)、area boss(:542-721)、DB `customLife`(:515-540)、reactor/`back`/`tile`/`obj`/`miniMap`/`ToolTip`/`seat`/`pvp`/`ladderRope`（P6+ 或 Java 无消费方） |
 | server/maps/MapleMapItem.java | 146 | TODO | internal/mapp |  |
 | server/maps/MapleMapObject.java | 16 | ACTV | internal/mapp | P4.2：mapp.Player 接口（ObjectID）；玩家的 oid = cid（Java setObjectId 抛 UnsupportedOperationException）；P4.3：sendSpawnData → Player.SendSpawnData(sink)（= 把自身 spawn 包写给收件人），另有 DespawnData 供 removePlayer 广播 |
 | server/maps/MapleMapObjectType.java | 17 | TODO | internal/mapp |  |

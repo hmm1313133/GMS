@@ -27,6 +27,7 @@ import (
 	"GMS/internal/netw"
 	"GMS/internal/protocol"
 	"GMS/internal/world"
+	"GMS/internal/wzs"
 )
 
 // characterStore is the DB surface the channel server needs (implemented by
@@ -107,6 +108,13 @@ type Server struct {
 	// player's packet goroutine. The map behind the pointer is never mutated
 	// after publication; a reload swaps in a fresh one.
 	configVals atomic.Pointer[map[string]int]
+	// mapFactory loads Map.wz data for the channels. Java gives every
+	// ChannelServer its own MapleMapFactory (and so its own MapleMap cache);
+	// Go keeps ONE factory per server, because MapData is immutable and
+	// shareable - the per-channel part (the *mapp.Map instances) stays in
+	// ChannelServer.maps. nil = no wz wired: every map stays a bare
+	// *mapp.Map (guarded by mu, like configStore).
+	mapFactory *mapp.Factory
 }
 
 // New creates the channel-server fleet for the given config.
@@ -152,6 +160,45 @@ func (s *Server) SetConfigValues(store configValueStore) {
 	s.mu.Lock()
 	s.configStore = store
 	s.mu.Unlock()
+}
+
+// SetWZ wires the Map.wz data source (Java MapleMapFactory's static `source`
+// provider, one factory per channel). It is optional: a nil root - or a root
+// without Map.wz, which is what a degraded startup has - logs one warning and
+// leaves every channel map a bare *mapp.Map instead of failing the boot.
+//
+// Like Java's static provider it is startup wiring: map instances created
+// before the call keep the data they were built with.
+func (s *Server) SetWZ(root *wzs.Root) {
+	if root == nil {
+		s.log.Warn("wz root unavailable, channel maps stay without Map.wz data")
+		return
+	}
+	p, err := root.WZ("Map.wz")
+	if err != nil {
+		s.log.Warn("Map.wz unavailable, channel maps stay without map data", "err", err)
+		return
+	}
+	s.mu.Lock()
+	s.mapFactory = mapp.NewFactory(p, s.log)
+	s.mu.Unlock()
+	s.log.Info("map data wired", "wz", p.Name())
+}
+
+// mapData returns the loaded data of a map id, nil when no wz is wired or the
+// image could not be loaded (the factory warns once per id).
+func (s *Server) mapData(id int) *mapp.MapData {
+	s.mu.Lock()
+	f := s.mapFactory
+	s.mu.Unlock()
+	if f == nil {
+		return nil
+	}
+	d, err := f.Load(id)
+	if err != nil {
+		return nil
+	}
+	return d
 }
 
 // ConfigValues returns the loaded switch map (Java Start.ConfigValuesMap). It
@@ -325,13 +372,26 @@ func (cs *ChannelServer) IP() string { return cs.ip }
 func (cs *ChannelServer) Players() *PlayerStorage { return cs.players }
 
 // Map returns the channel's instance of a map id, creating it on first use
-// (Java ChannelServer.getMapFactory().getMap(id)).
+// (Java ChannelServer.getMapFactory().getMap(id)). P4.3b loads the Map.wz data
+// on that first use and hands it to mapp.NewWithData; a map whose image is
+// missing (or a channel without wz) stays a bare instance, where Java's
+// getMap returns null.
 func (cs *ChannelServer) Map(id int) *mapp.Map {
 	cs.mapMu.Lock()
-	defer cs.mapMu.Unlock()
 	m := cs.maps[id]
-	if m == nil {
-		m = mapp.New(id)
+	cs.mapMu.Unlock()
+	if m != nil {
+		return m
+	}
+
+	// Load outside mapMu: the factory has its own lock, and a second goroutine
+	// racing here just re-reads the same cached data.
+	data := cs.srv.mapData(id)
+
+	cs.mapMu.Lock()
+	defer cs.mapMu.Unlock()
+	if m = cs.maps[id]; m == nil {
+		m = mapp.NewWithData(id, data)
 		cs.maps[id] = m
 	}
 	return m
