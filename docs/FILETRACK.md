@@ -8,9 +8,9 @@
 | metric | value |
 |---|---|
 | java files total | 533 |
-| to migrate (TODO+ACTV) | 397 |
-| done (DONE) | 34 |
-| merged (MERG) | 48 |
+| to migrate (TODO+ACTV) | 395 |
+| done (DONE) | 35 |
+| merged (MERG) | 49 |
 | skipped (SKIP) | 54 |
 
 ## pkg (root) - 1 files, 41 lines -> - [SKIP]
@@ -97,7 +97,7 @@
 | client/LoginCryptoLegacy.java | 129 | MERG | internal/login/crypto.go | $H$ 校验，golden 对拍 |
 | client/MapleBuffStat.java | 219 | TODO | internal/model |  |
 | client/MapleBuffStatValueHolder.java | 18 | TODO | internal/model |  |
-| client/MapleCharacter.java | 8828 | ACTV | internal/model | P2.4 getDefault/saveNewCharToDB(characters 行)/deleteWhereCharacterId 子集入 internal/database/characters.go；P4.2 loadCharFromDB 的 characters 行读取 → database.GetCharacterByID + internal/channel 的 Player 过渡结构；本体(P5.1)未迁 |
+| client/MapleCharacter.java | 8828 | ACTV | internal/model | P2.4 getDefault/saveNewCharToDB(characters 行)/deleteWhereCharacterId 子集入 internal/database/characters.go；P4.2 loadCharFromDB 的 characters 行读取 → database.GetCharacterByID + internal/channel 的 Player 过渡结构；**P4.7：出生点解析块（loadCharFromDB:919-932 DB 路径 / ReconstructChr:643-656 换频道路径，两份只差 forcedReturn 改写）→ `channel.resolveSpawn`，`changeMapInternal`(3277)/`changeMapPortal` → `channel.changeMapPortal`，`isAlive`/`setHp` → `Player.IsAlive/SetHP`**；本体(P5.1)未迁 |
 | client/MapleCharacterUtil.java | 283 | ACTV | internal/login/chars.go | P2.4 canCreateChar/isEligibleCharName/getIdByName 已迁（namePattern/RESERVED） |
 | client/MapleCharacterUtil副本.java | 270 | TODO | internal/model |  |
 | client/MapleClient.java | 1717 | ACTV | internal/login/auth.go | P2.2 已迁 login 子集（login/finishLogin/updateLoginState/unban/updateMacs）；P2.4 已迁 loadCharacters/login_Auth/allowedChar/getCharacterSlots/deleteCharacter 子集；其余 P4+ |
@@ -475,7 +475,7 @@
 | handling/channel/handler/PartyHandler.java | 169 | TODO | internal/channel/handler |  |
 | handling/channel/handler/PetHandler.java | 230 | TODO | internal/channel/handler |  |
 | handling/channel/handler/Player.java | 11 | TODO | internal/channel/handler |  |
-| handling/channel/handler/PlayerHandler.java | 1378 | ACTV | internal/channel | P4.4：`MovePlayer`（skip(33) → MovementParse → broadcastMessage(player, movePlayer, false) → updatePosition + setOldPosition）已迁入 `channel/movement.go`；飞天检测/follow/clone/坠落计数（依赖 foothold）与其余 handler 待后续 |
+| handling/channel/handler/PlayerHandler.java | 1378 | ACTV | internal/channel | P4.4：`MovePlayer`（skip(33) → MovementParse → broadcastMessage(player, movePlayer, false) → updatePosition + setOldPosition）已迁入 `channel/movement.go`；**P4.7：`ChangeMap`(1255)/`ChangeMapSpecial`(1245)/`InnerPortal`(1371) 三族迁入 `channel/warp.go`**（if 链逐条对齐：空 body=换频道未移植、!alive 复活、GM 直达、11 条硬编码转送表、portal 分支；dispatcher 的 skip(1) 内联在 special/inner 两个 handler 里）；飞天检测/follow/clone/坠落计数与其余 handler 待后续 |
 | handling/channel/handler/PlayerInteractionHandler.java | 890 | TODO | internal/channel/handler |  |
 | handling/channel/handler/PlayersHandler.java | 493 | TODO | internal/channel/handler |  |
 | handling/channel/handler/StatsHandling.java | 303 | TODO | internal/channel/handler |  |
@@ -867,7 +867,7 @@
 | server/maps/MapleDragon.java | 40 | TODO | internal/mapp |  |
 | server/maps/MapleFoothold.java | 66 | DONE | internal/mapp | P4.3b：`Foothold`（ID/X1/Y1/X2/Y2/Prev/Next）+ `IsWall()`（x1==x2）；`compareTo` 的单边比较器在 `compareFoothold`（`foothold.go`） |
 | server/maps/MapleFootholdTree.java | 175 | ACTV | internal/mapp | P4.3b：`FootholdTree` 平坦化（**Java 的四叉树永不细分**——lBound/uBound 从 (0,0) 起按 min/max 扩张，每个 foothold 都通过根节点包含判定，实测 13/13 与 315/315 都在根层）+ `FindBelow`（`x1<=x<=x2 && x1!=x2` 过滤、单边 compareTo 的 `sort.SliceStable`、斜面插值含 double 截断）+ `CalcPointBelow`；`insert`/`findWall`/`findWallR`/`checkRelevantFH` 待消费方（P6 的墙与掉落物）再迁 |
-| server/maps/MapleGenericPortal.java | 119 | TODO | internal/mapp |  |
+| server/maps/MapleGenericPortal.java | 119 | DONE | internal/channel | P4.7：`enterPortal` → `channel/warp.go` 的 `enterPortal`/`enterPortalByName`（**有 script 的传送门永不自动换图**；`tm==999999999` 不换图；**tn 缺失/找不到静默回退目标图 portal 0**；150² 外用门 = offense，Go 记日志；尾部"仍在原图才 enableActions"）。portalState 恒 true（只有脚本翻它，P7）；`getLevelLimit() > 0` 是 Java 死代码（factory 从不 set，不移植）。setter/getter 族由 `mapp.MapData` 的字段直读替代 |
 | server/maps/MapleLove.java | 54 | TODO | internal/mapp |  |
 | server/maps/MapleMap.java | 4359 | ACTV | internal/mapp | P4.2 玩家集合（addPlayer/removePlayer 的 mapobjects 部分 + MapFactory 惰性建图）；P4.3 spawn/despawn 广播（addPlayer → 对同图其他人 spawnPlayerMapobject + 新人对每个老玩家 + 自身；removePlayer → 广播 removePlayerFromMap；broadcastMessage(source, pkt, false) 的 source 排除）；P4.4 movePlayer 由 `channel.MovePlayer` 的广播 + Player.ApplyMovement 承担（Map.movePlayer 只重设坐标/刷新物件可见性，无物件时为恒等）；**P4.5：`BroadcastRanged` = `broadcastMessage(packet, rangedFrom)` Point 重载（`distanceSq <= GameConstants.maxViewRangeSq` = 10000²，source=null 含发送者），另导出常量 `MaxViewRangeSq`**；foot-hold/life/portal/reactor/掉落/地图特化（送货/月妙等）待 P4.3b/P6 |
 | server/maps/MapleMapEffect.java | 35 | TODO | internal/mapp |  |
@@ -875,7 +875,7 @@
 | server/maps/MapleMapItem.java | 146 | TODO | internal/mapp |  |
 | server/maps/MapleMapObject.java | 16 | ACTV | internal/mapp | P4.2：mapp.Player 接口（ObjectID）；玩家的 oid = cid（Java setObjectId 抛 UnsupportedOperationException）；P4.3：sendSpawnData → Player.SendSpawnData(sink)（= 把自身 spawn 包写给收件人），另有 DespawnData 供 removePlayer 广播 |
 | server/maps/MapleMapObjectType.java | 17 | TODO | internal/mapp |  |
-| server/maps/MapleMapPortal.java | 11 | TODO | internal/mapp |  |
+| server/maps/MapleMapPortal.java | 11 | MERG | internal/mapp | P4.7：仅 `extends MapleGenericPortal` + `super(2)`（MAP_PORTAL），无行为差异，与 `MapleGenericPortal` 同一实现（Java `PortalFactory.makePortal` 里 type==2 才 new 它） |
 | server/maps/MapleMist.java | 121 | TODO | internal/mapp |  |
 | server/maps/MapleNodes.java | 178 | TODO | internal/mapp |  |
 | server/maps/MapleReactor.java | 180 | TODO | internal/mapp |  |
@@ -945,7 +945,7 @@
 | tools/KoreanDateUtil.java | 51 | TODO | internal/protocol+crypto | split per file |
 | tools/MapleAESOFB.java | 130 | DONE | internal/protocol+crypto | split per file |
 | tools/MapleCustomEncryption.java | 74 | DONE | internal/protocol+crypto | split per file |
-| tools/MaplePacketCreator.java | 5826 | ACTV | internal/packet | P4.2：getCharInfo(WARP_TO_MAP)/temporaryStats_Reset/serverMessage；P4.3：spawnPlayerMapobject（SPAWN_PLAYER 0x00A2 全字段 + CHAR_MAGIC_SPAWN 8 处重复）/removePlayerFromMap（0x00A3）+ addRingInfo(List)/addMarriageRingLook；P4.4：movePlayer（MOVE_PLAYER 0x00BB：int cid + int 0 + 移动列表）与 spawnPlayerMapobject 的 pos/stance 改取真实值；P4.5：getChatText/facialExpression/getWhisper/getWhisperReply/getFindReply(WithMap) 五族（`internal/packet/chat.go`）+ serverNotice（P4.5b）；其余按域拆分增量迁（LOGIN 系仍在 internal/login/packets.go） |
+| tools/MaplePacketCreator.java | 5826 | ACTV | internal/packet | P4.2：getCharInfo(WARP_TO_MAP)/temporaryStats_Reset/serverMessage；P4.3：spawnPlayerMapobject（SPAWN_PLAYER 0x00A2 全字段 + CHAR_MAGIC_SPAWN 8 处重复）/removePlayerFromMap（0x00A3）+ addRingInfo(List)/addMarriageRingLook；P4.4：movePlayer（MOVE_PLAYER 0x00BB：int cid + int 0 + 移动列表）与 spawnPlayerMapobject 的 pos/stance 改取真实值；P4.5：getChatText/facialExpression/getWhisper/getWhisperReply/getFindReply(WithMap) 五族（`internal/packet/chat.go`）+ serverNotice（P4.5b）；**P4.7：getWarpToMap（26 字节传送包，spawn 单字节）+ enableActions 上移共享（`internal/packet/warp.go`，login 委托）（`getChannelChange` 随 P4.8）**；其余按域拆分增量迁（LOGIN 系仍在 internal/login/packets.go） |
 | tools/MockIOSession.java | 156 | TODO | internal/protocol+crypto | split per file |
 | tools/Pair.java | 47 | TODO | internal/protocol+crypto | split per file |
 | tools/StringUtil.java | 143 | TODO | internal/protocol+crypto | split per file |

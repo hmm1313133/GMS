@@ -300,11 +300,8 @@ func ServerIPPacket(ip [4]byte, port, charID int) []byte {
 // updatePlayerStats(EMPTY_STATUPDATE, itemReaction=true, 0) degenerates to
 // short UPDATE_STATS + byte 1 + int 0 (empty mask) + short 0. The CHAR_SELECT
 // guard failure path replies with it.
-func EnableActionsPacket() []byte {
-	w := protocol.NewWriter(8)
-	w.Op(protocol.SendUPDATE_STATS)
-	w.Byte(1)
-	w.Int(0)
-	w.Short(0)
-	return w.Bytes()
-}
+//
+// P4.7: the builder moved to the packet layer (packet.EnableActionsPacket),
+// because every guard path of the channel-side warp handlers needs it too; this
+// wrapper keeps the login call sites and their byte-level tests unchanged.
+func EnableActionsPacket() []byte { return packet.EnableActionsPacket() }

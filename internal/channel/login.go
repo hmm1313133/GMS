@@ -59,6 +59,10 @@ func (h channelHandler) handlePlayerLoggedIn(s *netw.Session, r *protocol.Reader
 //	c.sendPacket(getCharInfo) + temporaryStats_Reset
 //	player.getMap().addPlayer(player)
 //
+// P4.7 adds the portal half of the character load: the position and the
+// WARP_TO_MAP spawn byte come from the map's "sp" portal (resolveSpawn), not
+// from the raw characters row.
+//
 // Skipped Java steps (documented): the GM skill grants (管理隐身/管理加速
 // switches, configvalues), c.updateLoginState(2) (the login server already
 // wrote accounts.loggedin=2), and everything from the buddy/party/guild/
@@ -68,6 +72,7 @@ func (cs *ChannelServer) loggedIn2(s *netw.Session, playerID int) {
 	s.State.Store(c)
 
 	p := cs.players.GetPendingCharacter(playerID)
+	transfer := p != nil
 	if p != nil {
 		// Java ReconstructChr(transfer, c, true): rebuild without a DB
 		// round-trip. The Go port re-attaches the session to the already
@@ -94,6 +99,18 @@ func (cs *ChannelServer) loggedIn2(s *netw.Session, playerID int) {
 		return
 	}
 	c.player = p
+
+	// P4.7: the portal-based spawn point (Java loadCharFromDB:919-932 for the
+	// DB path, ReconstructChr:643-656 - which additionally rewrites the map when
+	// it has a forced return - for the CharacterTransfer path). The loaded row
+	// is updated exactly like the Java live character: getCharInfo's addCharStats
+	// writes its map/spawnpoint and every later packet reads it from there.
+	mapID, spawn, x, y := cs.resolveSpawn(p.Chr, transfer)
+	p.SetMapID(mapID)
+	p.Chr.Spawnpoint = spawn
+	p.SetPosition(x, y)
+	cs.log.Info("spawn resolved", "playerID", p.ID, "map", mapID,
+		"spawn", spawn, "x", x, "y", y, "transfer", transfer)
 
 	// Java ChannelServer.forceRemovePlayerByAccId(c, c.getAccID()): a second
 	// session of the same account (another channel) must not stay online.

@@ -263,6 +263,28 @@ func TestRandStreamConnectDataIsDeterministic(t *testing.T) {
 	assert.NotEqual(t, wa.Bytes(), wc.Bytes())
 }
 
+func TestWarpToMapAndEnableActionsPackets(t *testing.T) {
+	// P4.7: getWarpToMap(to, spawnPoint, chr) - the in-channel transfer packet.
+	b := WarpToMapPacket(10000, 1, 2, 50)
+	assert.Len(t, b, 26, "short + int + 3 bytes + short + int + byte + short + long")
+	r := protocol.NewReader(b)
+	assert.Equal(t, int16(protocol.SendWARP_TO_MAP), r.Short())
+	assert.Equal(t, int32(1), r.Int(), "channel-1")
+	assert.Equal(t, byte(0), r.Byte())
+	assert.Equal(t, byte(3), r.Byte(), "the transfer marker getCharInfo does not use")
+	assert.Equal(t, int16(0), r.Short())
+	assert.Equal(t, byte(0), r.Byte())
+	assert.Equal(t, int32(10000), r.Int())
+	assert.Equal(t, byte(1), r.Byte(), "the spawn point is a single byte")
+	assert.Equal(t, int16(50), r.Short())
+	assert.NotZero(t, r.Long(), "PacketHelper.getTime(now)")
+	assert.Zero(t, r.Len())
+
+	// enableActions: short UPDATE_STATS + byte 1 + int 0 + short 0.
+	actions := EnableActionsPacket()
+	assert.Equal(t, []byte{0x22, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}, actions)
+}
+
 func TestTemporaryStatsResetAndServerMessage(t *testing.T) {
 	reset := TemporaryStatsResetPacket()
 	assert.Equal(t, []byte{0x26, 0x00}, reset, "TEMPORARY_STAT_RESET carries no body")

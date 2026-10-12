@@ -186,8 +186,10 @@ DoD：读取 16 个 wz 全部无错；910000000 等代表图的地图名/NPC/刷
 - GMS-P4.4 移动处理（MovementParse 语义）+ 状态广播
 - GMS-P4.5 聊天（公屏/私聊/表情）✅ + ~~关键字屏蔽（abc/关键字屏蔽 表）~~ **不做**：jar 字节级查证确认 abc/关键字屏蔽 与 abc/屏幕关键字 是死代码（全 jar 无引用、ini 路径写错且文件缺失），原版聊天无任何过滤；用户拍板不实现（见 PROGRESS GMS-P4.5 查证段）
 - GMS-P4.5b configvalues 开关层（`gui/Start.ConfigValuesMap`）：聊天/找人等运营开关从库读取，`val > 0` = 关闭
+- GMS-P4.7 出生点与换图：登录出生点从 Map.wz 的 `sp` portal 解析（`loadCharFromDB:919-932`/`ReconstructChr:643-656` 两份语义）+ `CHANGE_MAP(0x21)`/`CHANGE_MAP_SPECIAL(0x61)`/`USE_INNER_PORTAL(0x62)` + `getWarpToMap` 传送包 + `MapleGenericPortal.enterPortal`（2026-10-11 完成）
 - GMS-P4.6 NPC 交互基础：点击 NPC 触发脚本占位（P7 完整化）
-DoD：两个客户端同图互相可见、移动流畅、聊天互通、掉线重连正常。
+- GMS-P4.8 换频道：CHANGE_MAP 空 body（`getChannelChange` + `updateLoginState(1)` + 跨频道 CharacterTransfer 实连验证）
+DoD：两个客户端同图互相可见、移动流畅、聊天互通、换图正常、掉线重连正常。
 
 ### P5 角色与物品（2 周）
 

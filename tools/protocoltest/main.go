@@ -10,6 +10,8 @@
 //	go run ./tools/protocoltest -addr 127.0.0.1:8484 -login testgo:test123 -serverlist -status
 //	go run ./tools/protocoltest -addr 127.0.0.1:7575 -loggedinas 3 -chat hello -hold -wait 10s
 //	go run ./tools/protocoltest -addr 127.0.0.1:7575 -loggedinas 3 -whisper "name:hi" -hold -wait 10s
+//	go run ./tools/protocoltest -addr 127.0.0.1:7575 -loggedinas 3 -changemap "10000:" -hold -wait 10s
+//	go run ./tools/protocoltest -addr 127.0.0.1:7575 -loggedinas 3 -changemapspecial out00 -hold -wait 10s
 package main
 
 import (
@@ -39,6 +41,9 @@ func main() {
 	loggedInAs := flag.Int("loggedinas", 0, "send PLAYER_LOGGEDIN for this char id (channel-server probe: -addr 127.0.0.1:7575)")
 	moveTo := flag.String("move", "", "send MOVE_PLAYER (0x0024) to this 'x,y' position after PLAYER_LOGGEDIN (P4.4; pair with -loggedinas)")
 	chatText := flag.String("chat", "", "send GENERAL_CHAT (0x002D) with this text after PLAYER_LOGGEDIN (P4.5; use ASCII - the Windows shell mangles CJK args)")
+	changeMap := flag.String("changemap", "", "send CHANGE_MAP (0x0021) for 'targetid:portal' after PLAYER_LOGGEDIN (P4.7; use -1 as targetid to walk into a portal)")
+	changeMapSpecial := flag.String("changemapspecial", "", "send CHANGE_MAP_SPECIAL (0x0061) for this portal name (P4.7)")
+	innerPortal := flag.String("innerportal", "", "send USE_INNER_PORTAL (0x0062) for 'portal:x,y' (P4.7)")
 	emote := flag.Int("emote", 0, "send FACE_EXPRESSION (0x002F) with this emote id (P4.5)")
 	whisper := flag.String("whisper", "", "send WHISPER mode 6 to 'name:text' (P4.5)")
 	findWho := flag.String("find", "", "send WHISPER mode 5 'find character' for this name (P4.5)")
@@ -194,6 +199,54 @@ func main() {
 		sendPacket(conn, cSend, w.Bytes())
 		fmt.Printf("sent WHISPER (0x0075) mode=5 find %q\n", *findWho)
 	}
+	if *changeMap != "" {
+		i := strings.Index(*changeMap, ":")
+		if i < 0 {
+			fmt.Fprintf(os.Stderr, "-changemap: expect targetid:portal\n")
+			os.Exit(1)
+		}
+		targetID, err := strconv.Atoi(strings.TrimSpace((*changeMap)[:i]))
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "-changemap: %v\n", err)
+			os.Exit(1)
+		}
+		w := protocol.NewWriter(32 + len(*changeMap))
+		w.Short(int(protocol.RecvCHANGE_MAP))
+		w.Byte(0) // Java reads and discards one byte
+		w.Int(int32(targetID))
+		w.MapleAsciiString((*changeMap)[i+1:])
+		w.Short(0) // wheel request
+		sendPacket(conn, cSend, w.Bytes())
+		fmt.Printf("sent CHANGE_MAP (0x0021) targetid=%d portal=%q\n", targetID, (*changeMap)[i+1:])
+	}
+	if *changeMapSpecial != "" {
+		w := protocol.NewWriter(32 + len(*changeMapSpecial))
+		w.Short(int(protocol.RecvCHANGE_MAP_SPECIAL))
+		w.Byte(0) // MapleServerHandler's slea2.skip(1)
+		w.Short(0)
+		w.MapleAsciiString(*changeMapSpecial)
+		sendPacket(conn, cSend, w.Bytes())
+		fmt.Printf("sent CHANGE_MAP_SPECIAL (0x0061) portal=%q\n", *changeMapSpecial)
+	}
+	if *innerPortal != "" {
+		i := strings.Index(*innerPortal, ":")
+		if i < 0 {
+			fmt.Fprintf(os.Stderr, "-innerportal: expect portal:x,y\n")
+			os.Exit(1)
+		}
+		x, y, err := parsePoint((*innerPortal)[i+1:])
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "-innerportal: %v\n", err)
+			os.Exit(1)
+		}
+		w := protocol.NewWriter(32 + len(*innerPortal))
+		w.Short(int(protocol.RecvUSE_INNER_PORTAL))
+		w.Byte(0) // MapleServerHandler's slea2.skip(1)
+		w.MapleAsciiString((*innerPortal)[:i])
+		w.Pos(x, y)
+		sendPacket(conn, cSend, w.Bytes())
+		fmt.Printf("sent USE_INNER_PORTAL (0x0062) portal=%q to (%d,%d)\n", (*innerPortal)[:i], x, y)
+	}
 
 	// ---- 3. listen for replies ----
 	// Scripted modes exit once their expected replies arrived; bare mode
@@ -338,6 +391,10 @@ func decodeReply(b []byte) {
 		}
 	case 0x0026: // TEMP_STATS_RESET
 		fmt.Println("       [TEMP_STATS_RESET: empty body]")
+	case 0x0022: // UPDATE_STATS - enableActions has the empty mask (P4.7)
+		if len(b) == 9 && b[2] == 1 {
+			fmt.Println("       [ENABLE_ACTIONS: empty stat update]")
+		}
 	case 0x00A4: // CHATTEXT (P4.5)
 		decodeChatText(b)
 	case 0x00C3: // FACIAL_EXPRESSION (P4.5)
@@ -490,12 +547,17 @@ func decodeServerIP(b []byte) {
 	fmt.Printf("       [SERVER_IP: ip=%s port=%d charID=%d]\n", ip, port, charID)
 }
 
-// decodeWarpToMap parses the channel-enter packet (Java
-// MaplePacketCreator.getCharInfo): short WARP_TO_MAP + int (channel-1) +
-// byte 0 + byte 1 + byte 1 + short 0 + 3 rand ints + long -1 + byte 0 +
-// addCharStats (int id + 13-byte name + gender/skin/face/hair + 24 zero +
-// level/job/stat block/exp/fame + time + map + spawnpoint) + buddy capacity +
-// byte 1 + inventory info ... Only the head fields are printed.
+// decodeWarpToMap parses the two WARP_TO_MAP shapes:
+//
+//   - P4.7 getWarpToMap (the in-channel transfer): short + int (channel-1) +
+//     byte 0 + byte 3 + short 0 + byte 0 + int map + byte spawn + short hp +
+//     long time.
+//   - P4.2 getCharInfo (entering the world): short + int (channel-1) + byte 0 +
+//     byte 1 + byte 1 + short 0 + 3 rand ints + long -1 + byte 0 + addCharStats
+//     (int id + 13-byte name + gender/skin/face/hair + 24 zero + level/job/
+//     stat block/exp/fame + time + map + spawnpoint) + buddy capacity + ...
+//
+// The marker byte after the zero byte tells them apart (3 = transfer).
 func decodeWarpToMap(b []byte) {
 	if len(b) < 8 {
 		fmt.Println("       [WARP_TO_MAP: truncated]")
@@ -504,7 +566,20 @@ func decodeWarpToMap(b []byte) {
 	r := protocol.NewReader(b[2:])
 	ch := int(r.Int()) + 1
 	r.Byte()
-	r.Byte()
+	marker := int(r.Byte())
+	if marker == 3 {
+		r.Short()
+		r.Byte()
+		mapID := int(r.Int())
+		spawn := int(r.Byte())
+		hp := int(r.Short())
+		fmt.Printf("       [WARP_TO_MAP: channel=%d TRANSFER map=%d spawn=%d hp=%d]\n",
+			ch, mapID, spawn, hp)
+		if r.Err != nil {
+			fmt.Printf("       [WARP_TO_MAP: parse error: %v]\n", r.Err)
+		}
+		return
+	}
 	r.Byte()
 	r.Short()
 	rnd1, rnd2, rnd3 := r.Int(), r.Int(), r.Int()
@@ -536,9 +611,12 @@ func decodeWarpToMap(b []byte) {
 	}
 }
 
-// decodeSpawnPlayer prints the head of MaplePacketCreator.spawnPlayerMapobject
-// (0x00A2): int cid + byte level + str name + str guild. Everything past that
-// is the buff/mount/look block (see packet.SpawnPlayerPacket).
+// decodeSpawnPlayer prints the head and the position of
+// MaplePacketCreator.spawnPlayerMapobject (0x00A2): int cid + byte level + str
+// name + str guild, and - 35 bytes before the end - pos + stance. The tail is
+// fixed (packet.SpawnPlayerPacket): pos(4) + stance(1) + foothold(2) + pets(1)
+// + mount level/exp/fatigue(12) + announce box(1) + chalkboard(1) +
+// addRingInfo x2 (10) + marriage ring(1) + short(2).
 func decodeSpawnPlayer(b []byte) {
 	if len(b) < 8 {
 		fmt.Println("       [SPAWN_PLAYER: truncated]")
@@ -549,6 +627,14 @@ func decodeSpawnPlayer(b []byte) {
 	level := int(r.Byte())
 	name := r.MapleAsciiString()
 	guild := r.MapleAsciiString()
+	if len(b) >= 35 {
+		tr := protocol.NewReader(b[len(b)-35:])
+		x, y := tr.Pos()
+		stance := int(tr.Byte())
+		fmt.Printf("       [SPAWN_PLAYER: charID=%d level=%d name=%q guild=%q pos=(%d,%d) stance=%d]\n",
+			id, level, name, guild, x, y, stance)
+		return
+	}
 	fmt.Printf("       [SPAWN_PLAYER: charID=%d level=%d name=%q guild=%q]\n", id, level, name, guild)
 }
 

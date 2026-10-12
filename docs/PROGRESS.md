@@ -4,15 +4,15 @@
 > 规则：完成打 `[x]` 并附日期/(提交号)；进行中在行尾标 🔄；新增任务追加编号不改旧号；范围变化记入文末"变更记录"。
 > **文件级追踪**：以 `docs/FILETRACK.md` 为准（533 个 Java 文件逐条标记 TODO/ACTV/DONE/MERG/SKIP），本文件只追踪阶段任务。
 
-最后更新：2026-09-12（P4.5 聊天完成：公屏/表情/私聊/找人 + 坐标竞态修正；关键字屏蔽查证后判为"原版无此功能"不做；P4.5b configvalues 开关层）
+最后更新：2026-10-11（P4.7 出生点与换图：portal 出生点解析 + CHANGE_MAP/CHANGE_MAP_SPECIAL/USE_INNER_PORTAL + WARP_TO_MAP 传送包）
 
 ## 完成度汇总
 
 | 维度 | 进度 |
 |---|---|
 | Phase | 1 / 12（P1 完成；P0 剩 0.6；P2 代码完成待 P0.6 验收；P3 进行中；P4 进行中） |
-| 任务 | 24 / 77（P0.1-0.5 + P1.1-1.5 + P2.1-2.5 + P3.1 + P3.2 + P4.1-P4.5 + P4.5b + P4.3b） |
-| 文件级（FILETRACK） | DONE 34 / MERG 48 / ACTV 20 / TODO 377（余 SKIP 54，合计 533） |
+| 任务 | 25 / 77（P0.1-0.5 + P1.1-1.5 + P2.1-2.5 + P3.1 + P3.2 + P4.1-P4.5 + P4.5b + P4.3b + P4.7） |
+| 文件级（FILETRACK） | DONE 35 / MERG 49 / ACTV 20 / TODO 375（余 SKIP 54，合计 533） |
 | 脚本可用率（P7 起跟踪） | - |
 | 当前里程碑 | **M1：登录闭环（P0–P2）🔄 / M2 数据层起步（P3）→ P4 进入世界（进图 + 同图互见 + 聊天已通）** |
 
@@ -202,8 +202,25 @@
   - **运维入口（提交 44f164c）**：`tools/addaccount` 加 `-configvalues`（列全部开关并标注 `>0 = OFF`）、`-configvalue "NAME=VAL"`、`-unsetconfigvalue NAME`、`-unlock NAME`（清陈旧 `accounts.loggedin`，等价 Java `unlockAcc` 的按名 UPDATE）——P8 运营面板前改开关的唯一入口
   - **顺带修的既有日志 bug（两处同类，提交 44f164c）**：`channel.OnPacket` 与 `login.handler.OnPacket` 的 debug 行用 `fmt.Sprintf("%04X", opcode)`，而 `protocol.RecvOp` 实现 `fmt.Stringer` ⇒ 打出的是**名字的十六进制**（`47454E4552414C5F43484154` / `4C4F47494E5F50415353574F5244`）；已改为 `uint16(opcode)` 取数字 + 独立 `name` 字段
   - **尚未实现**：`聊天记录开关`（依赖尚未移植的 `FileoutputUtil` 文件日志，`服务端记录信息/玩家档案<名>/聊天记录.txt`）—— 开关已装载但未消费，代码里留了注明日期的位置注释；其余可转正的开关（登陆验证/GM 隐身/飞天检测）留给后续
+- [x] GMS-P4.7 出生点与换图（portal spawn + CHANGE_MAP 族）✅ 2026-10-11
+  - **范围**：PLAN 里 P4.3b 之后的两条"最短可见收益"一次做完——①登录出生点从 Map.wz 的 `sp` portal 解析（替掉 `WARP_TO_MAP`/`SPAWN_PLAYER` 写死的 (0,0)，勾掉 P4.3 的既有偏差）；②换图三件套 `CHANGE_MAP(0x21)`/`CHANGE_MAP_SPECIAL(0x61)`/`USE_INNER_PORTAL(0x62)` + `getWarpToMap` 传送包 + `MapleGenericPortal.enterPortal`。
+  - **`internal/packet/warp.go`（新）**：`WarpToMapPacket(mapID, spawnPoint, channel, hp)` = `getWarpToMap`（short 0x0081 + int(channel-1) + `0,3` + short 0 + byte 0 + int map + **byte spawn** + short hp + long time，26 字节；**spawn 只占 1 字节**——door portal 从 128 编号正是为此）；`EnableActionsPacket()` 从 `login/packets.go` **上移共享**（login 改为委托，字节与既有断言不变），换图族所有"不换图"路径都回它。
+  - **出生点解析 `resolveSpawn`**（`channel/warp.go`，= `loadCharFromDB:919-932` 的 channelserver 块）：`mapData(mapid)` → 无图（且 wz 已接线）回退 **100000000** → `Portal(spawnpoint)` → **nil 则 `Portal(0)` 且 spawnpoint 重写 0** → `SetPosition(portal)`；返回值写回 `Chr.Map/Chr.Spawnpoint`（= Java 改活角色字段，`addCharStats` 读的正是它们）。
+    - **Java 双份不一致（保真分歧点）**：`ReconstructChr:643-656`（换频道路径）多一步 `forcedReturn != 999999999 则改图`，`loadCharFromDB:919-932`（DB 路径）**没有**——Go 用 `resolveSpawn(chr, forcedReturn bool)` 两个参数分别对齐，两条路径都有 wire 测试。
+    - **降级语义**：Java 在"图与回退图都无数据 / 图无 portal 0"处直接 NPE；Go 记日志后保持原 map id + (0,0)。**无 wz（DB-only 冒烟）时不做 100000000 回退**（`hasMapFactory()` 区分"图缺失"与"压根没接 wz"），否则降级模式全员挤到一张图、聊天/移动测试全崩。
+  - **`changeMapPortal`**（= `changeMapInternal`，`changeMap`/`changeMapPortal` 的 Java `pto` 形参本就没用，合成一个）：**先发传送包** → 旧图 `RemovePlayer`（剩家收 REMOVE_PLAYER_FROM_MAP）→ 仍在注册表才 `SetMapID` + `SetPosition(portal)` → 新图 `AddPlayer`（含自己的 SPAWN_PLAYER，坐标即 portal 坐标）。`saveToDB`/`eventInstance.changedMap`/`relocHeal`/队伍块 = P5/P6/P8。
+  - **`enterPortal`**（= `MapleGenericPortal.enterPortal`）保真点：**有 `script` 的传送门永不自动换图**（else-if 结构；P7 脚本宿主落地前是占位日志）；`tm == 999999999` 不换图；**目标图找不到 `tn`（或 tn 为空）静默回退目标图 portal 0**；`portalState` 恒 true（只有脚本会翻，P7）；`to.getLevelLimit() > 0` 是 **Java 死代码**（`MapleMapFactory` 从不调 `setLevelLimit`，恒 0，不移植）；150²（22500）外用门 = 反作弊 offense，Go 记 INFO；尾部"仍在原图则 enableActions"。
+  - **`handleChangeMap`**（= `PlayerHandler.ChangeMap`）if 链逐条对齐：空 body = 换频道（**未移植**，需 accounts.loggedin 写 + 重连流，见下）；`targetid==0 → 1000000` 重写；`!isAlive → 复活`（HP=50 + 回 `returnMap` portal 0；**wheel 复活分支跳过**——无背包时 `haveItem(5510000)` 恒 false，与"没买轮子的人"行为一致）；`isGM → 目标图 portal 0`（图与 portal 0 都在才动，否则静默）；`!isGM → 11 条硬编码转送表`（9130401/9140900/9140901/9140902/9000900/9000 组、900090101→100030100、2010000→104000000、106020001/106020502→前一张、**map 0 → 10000**；9000 组的 enableActions 条件看着反着——它对 900090000..900090004 之外的目标才发，换图照做；**表外目标静默丢弃**，Java 那个 else-if 链没有 else）；`portalName → enterPortal`；无名 → enableActions。
+  - **`handleChangeMapSpecial`/`handleInnerPortal`**：前者的 body = dispatcher `skip(1)` + handler `readShort()` + str（**dispatcher 的 skip 内联进 handler**，注释注明）；后者 = `skip(1)` + str + short x + short y → 校验 portal 存在 → `SetPosition`（`Map.movePlayer` 在无地图物件时恒等，且 **Java 不广播**）。
+  - **`Player` 新面**：`SetMapID`（写 `Chr.Map`+`MapIDVal`，与 `MapID()` 同一把锁——顶号扫掉/登出 goroutine 会读它）；`HP/IsAlive/SetHP`；`MapID()` 补 RLock（P4.5 只保了坐标/stance，本轮把 map id 也纳入）。
+  - **mapForWarp**：目标图无 wz 数据 ⇒ `(nil, false)`（= Java `getMap(id) == null`），所有换图路径据此回 enableActions；**没接 wz 的频道服不能换图**（Java 此时连登录都 NPE）。
+  - **测试**：`packet` +1（WarpToMapPacket 逐字段 26 字节 + EnableActions 逐字节）；`channel` 新 `warp_test.go` **10 个**（登录出生点=portal 坐标 / 陈旧 spawnpoint 回退 portal 0 且行重写 / 回退 Henesys / forcedReturn 只在换频道路径 / 转送表换图含 enableActions→传送包→spawn 顺序与 B 的 despawn / portal 族四分支 + tn 回退 + CHANGE_MAP_SPECIAL 回程 / 表外静默 + 空 body 忽略 / GM 直达 portal 0 无 enableActions / 死亡复活回 returnMap + HP=50 / INNER portal 移坐标零广播）。**夹具 7 个手写 img**（`internal/channel/testdata/wz/Map.wz/Map/{Map0,Map1,Map9}/`：起始图/目标图/forcedReturn 图/回退目标 + map 0/10000/100000000），夹具 id 用 **9100001xx**——第一版用 9000001xx 撞上了转送表的 `divi/1000==9000 && target/100000==9000` 组（真实教训写进了测试注释）。
+  - **live 冒烟全过**（SQLite + 真实 wz，两号三角）：骑士团建角 `22222`(map 130030000) 登录 → `WARP_TO_MAP map=130030000 spawn=0` + `SPAWN_PLAYER pos=(-178,-12)`（= 该图 portal 0 坐标，**出生点解析实拖生效**）；`11111`(map 0) 发 `CHANGE_MAP targetid=10000` → `ENABLE_ACTIONS` + `WARP_TO_MAP TRANSFER map=10000 spawn=0 hp=50` + 自己 `SPAWN_PLAYER pos=(-93,450)`，同图 `33333` 收 `REMOVE_PLAYER_FROM_MAP(20)`；随后 `CHANGE_MAP_SPECIAL out00`（map 10000 的 tm=20000/tn=in00）→ `TRANSFER map=20000 spawn=1` + `pos=(-140,273)`（= 20000 图 "in00" portal 坐标）；服务端日志两条 `player changed map from=0 to=10000 portal=0` / `from=10000 to=20000 portal=1`，无 WARN/ERROR。测完删号停进程。
+  - **探针**：`-changemap "targetid:portal"` / `-changemapspecial <portal>` / `-innerportal "portal:x,y"`；`WARP_TO_MAP` 解码按 marker byte **分两形**（1=getCharInfo 273 字节全量 / 3=transfer 26 字节 map+spawn+hp）；`SPAWN_PLAYER` 尾部 35 字节固定 ⇒ 顺带解出 **pos/stance**；`UPDATE_STATS` 空掩码 → `[ENABLE_ACTIONS]`。
+  - **未做（明确记档）**：CHANGE_MAP 空 body 的**换频道**（`getChannelChange` + `updateLoginState(1)` + `removePlayer`，需 accounts.loggedin 的 DAO 写 + 客户端重连流，P4.8 候选）；portal script（P7）；`updateSingleStat(HP)` 单属性包（P5.1 属性系统一起）。
 - [ ] GMS-P4.6 NPC 交互占位
-- 冒烟：双客户端同图互见/聊天/掉线重连
+- [ ] GMS-P4.8 换频道（CHANGE_MAP 空 body：getChannelChange + updateLoginState(1) + 跨频 CharacterTransfer 实连）
+- 冒烟：双客户端同图互见/聊天/换图/掉线重连（✅ 换图已于 P4.7 实测）
 
 ## P5 角色与物品 ⬜
 

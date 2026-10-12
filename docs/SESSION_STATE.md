@@ -3,7 +3,7 @@
 > 用途：跨会话恢复工作现场。加载本文件后可从"断点"继续重构。
 > 配套：PLAN.md（总方案）、PROGRESS.md（阶段勾选）、FILETRACK.md（533 文件级状态）。
 
-保存时间：2026-09-12（P4.3b 地图实例数据：Map.wz 的 info/portal/foothold/life 装载 + Factory；P4.5 聊天与 P4.5b 开关层已提交 c75f0a4/44f164c）
+保存时间：2026-10-11（P4.7 出生点与换图：portal 出生点解析 + CHANGE_MAP 族 + getWarpToMap 传送包；**代码完成、全测绿、live 冒烟过，未提交**）
 工作目录：`I:\GMS`（go module 名 `GMS`，Go 1.25.5）
 目标：将 `I:\Zevms`（079MAX2/ZEVMS Java）重构为 Go，按 P0->P11 推进。
 
@@ -16,15 +16,33 @@ go test  ./...                                   ✅ 全绿
 ```
 
 - `internal/login`：44 个测试全过（P2.x 历史 + P4.1 的 7 个选角/双登 wire 端到端）；`addCharLook` 已改为调用 `packet.AddCharLook`（字节布局不变，P2.4 断言仍全过）。
-- `internal/packet`：6 个测试（P4.2：WARP_TO_MAP 逐字段解码 + CRand32 确定性/怪癖 + reset/公告封包；P4.3：SPAWN_PLAYER 逐字段解码至 `Len()==0` + REMOVE_PLAYER_FROM_MAP 逐字节；**P4.4：MOVE_PLAYER 逐字段 + spawn 的 pos/stance 断言**）。
+- `internal/packet`：11 个测试（P4.2：WARP_TO_MAP 逐字段解码 + CRand32 确定性/怪癖 + reset/公告封包；P4.3：SPAWN_PLAYER 逐字段解码至 `Len()==0` + REMOVE_PLAYER_FROM_MAP 逐字节；P4.4：MOVE_PLAYER 逐字段 + spawn 的 pos/stance 断言；P4.5：chat/whisper 族；**P4.7：`TestWarpToMapAndEnableActionsPackets`（传送包 26 字节逐字段 + enableActions 逐字节）**）。
 - `internal/movement`：**P4.4 新包，5 个测试**（12 种命令往返逐字段 / 3-4-7-8-9-11 丢弃 duration 的字节断言 / NewFh 怪癖 / 坏包 3 例 / updatePosition 取末段）。
-- `internal/channel`：15 个（P4.1 的 6 个 + P4.2 的 7 个 + P4.3 的 1 个：双客户端同图 spawn/despawn wire 端到端 + **P4.4 的 1 个：MOVE_PLAYER 广播/坐标落地/坏包丢包**）。
+- `internal/channel`：37 个（P4.1 的 6 个 + P4.2 的 7 个 + P4.3/P4.4/P4.5/P4.5b 的 14 个 + **P4.7 的 10 个：`warp_test.go`（出生点/回退/forcedReturn 两路/转送表/portal 族/GM/复活/inner portal，全部真实 wire + `testdata/wz` 手写夹具 7 个 img）**）。
 - `internal/mapp`：**P4.3 起有独立测试**（3 个：进图广播顺序 / 离开广播与二次移除 no-op / Broadcast 排除 source）。
 - `internal/world`：4 个（票据 put-take-ip 集合/并发/Finder）。
 - `internal/config`：+1（P2.5 注册开关默认值）+1（P4.1 external_ip 默认）。
 - `internal/database`：SQLite 集成测试 4 组（TestSQLiteAccountChain + TestSQLiteBanAndAutoRegister + P3.5 drops 4 个 + **GORM 迁移新增 characters_test 2 个**）+ 可选 MySQL 集成（GMS_TEST_DB_DSN）。
 - **live 验证全过（GORM 后）**：MySQL 只读冒烟（账号/角色真表/掉落 900/14243/16）+ SQLite 完整握手（auto-register → CHOOSE_GENDER → SERVERLIST → SERVERSTATUS → CHARLIST）。
 - ✅ **`go build ./...`（全包）恢复全绿**：本会话把 pre-refactor 残留改名隔离（`main.go`→`_legacy_main.go`、`handing`→`_handing`、`client`→`_client`；下划线前缀是 Go 工具链官方忽略机制，**文件内容原封未动、可随时改回**，比原计划的 cleanup-oldlayout.ps1 删除方案更保守）。`go mod tidy` 随之首次跑通，gnet/zap/properties/maplelib 等垃圾依赖从 go.mod 清除。
+
+### 断点 P 会话（2026-10-11，P4.7 出生点与换图；未提交）
+
+1. **范围**：断点 O 列的两条"最短可见收益"一次做完——登录出生点接 portal 数据 + `CHANGE_MAP`(0x21)/`CHANGE_MAP_SPECIAL`(0x61)/`USE_INNER_PORTAL`(0x62) 三族 handler + `getWarpToMap` 传送包。P4.3 的"spawn 包 pos 写 (0,0)"既有偏差已勾掉。
+2. **新文件**：`internal/packet/warp.go`（`WarpToMapPacket`/`EnableActionsPacket`——后者从 `login/packets.go` 上移共享，login 改为委托，字节与断言不变）、`internal/channel/warp.go`（`resolveSpawn`/`mapForWarp`/`changeMapPortal`/`enterPortal(ByName)`/`handleChangeMap(Special)`/`handleInnerPortal`/`tableWarp`/`reviveAtReturnMap`）、`internal/channel/warp_test.go`（10 个）+ `internal/channel/testdata/wz/Map.wz/Map/{Map0,Map1,Map9}/` 手写夹具 7 个 img。
+3. **出生点两份 Java 语义（勿混）**：`loadCharFromDB:919-932`（DB 路径，**无** forcedReturn 改写）vs `ReconstructChr:643-656`（换频道路径，**有** `forcedReturn != 999999999 则改图`）——Go 是 `resolveSpawn(chr, forcedReturn bool)`，`loggedIn2` 按"是否挂起转接"传参，两条路径各有 wire 测试。公共链：无图回退 **100000000** → `Portal(spawnpoint)` → nil 则 `Portal(0)` + **spawnpoint 重写 0**（写回 `Chr.Spawnpoint`，`addCharStats` 读它）→ `SetPosition(portal)`。
+4. **降级语义（易错）**：Java 在"图/回退图都没数据、或图无 portal 0"处 **NPE**；Go 记日志保持原 map + (0,0)。**没接 wz 时不做 100000000 回退**（`Server.hasMapFactory()` 区分"图缺失"与"没接 wz"）——否则 DB-only 冒烟里全员挤到一张图，聊天/移动测试全崩（本轮真实踩过：whisper 测试收到意外 SPAWN_PLAYER 才发现）。
+5. **换图链序（保真）**：`changeMapPortal` = **先发传送包** → 旧图 `RemovePlayer`（别人收 REMOVE_PLAYER_FROM_MAP）→ 仍在 PlayerStorage 才 `SetMapID`+`SetPosition(portal)` → 新图 `AddPlayer`（含自己的 SPAWN_PLAYER，坐标=portal 坐标）。Java `changeMapInternal` 的 `pto` 形参没用（changeMap/changeMapPortal 等价），合成一个函数。
+6. **enterPortal 保真点**：**有 `script` 的传送门永不自动换图**（else-if 结构，P7 前是占位日志）；`tm==999999999` 不换图；**tn 缺失/找不到静默回退目标图 portal 0**；`getLevelLimit()>0` 是 Java 死代码（factory 从不 set，**不移植**）；portalState 恒 true；150² 外用门 = offense → Go 记 INFO；尾部"仍在原图才 enableActions"。
+7. **handleChangeMap 的 if 链（勿重排）**：空 body=换频道（**未移植**，P4.8）；`targetid==0 → 1000000`；`!alive → 复活`（HP=50 + returnMap portal 0；wheel 分支因无背包恒 false，与"没买轮子的人"一致）；`GM → 目标图 portal 0`（都在才动，无回包）；`!GM → 11 条硬编码转送表`（**表外目标静默丢弃**——Java 链没有 else；9000 组的 enableActions 只对 900090000..900090004 之外发）；`portal → enterPortal`；无名 → enableActions。
+8. **dispatcher 的 skip 内联**：`CHANGE_MAP_SPECIAL`/`USE_INNER_PORTAL` 在 `MapleServerHandler` 的 case 里各有 `slea2.skip(1)`，Go 把这个 skip 内联在 handler 开头（注释注明）——**忘了它整包错位**（portal 名解析成乱码），本轮踩过一次。
+9. **Player 新面**：`SetMapID`（写 `Chr.Map`+`MapIDVal`）、`MapID()` 补 RLock（顶号/登出 goroutine 会跨读）、`HP/IsAlive/SetHP`。`mapForWarp`：目标图无 wz 数据 = Java `getMap()==null` → `(nil,false)`，所有换图路径据此回 enableActions。
+10. **夹具 id 命名教训**：第一版用 9000001xx 撞上转送表 `mapID/100000==9000 && targetID/100000==9000` 组（900000000..900099999 全命中）——改用 **9100001xx**。夹具：910000100 起始图（sp/out/scripted/notarget/badtn 五个 portal）/910000101 目标图（in→回程）/910000102+910000103 forcedReturn 对/Map0 的 0 与 10000（转送表对）/Map1 的 100000000（回退图）。
+11. **测试**：`channel` +10、`packet` +1（明细见 PROGRESS P4.7）。测试侧新解码 helper：`readCharInfoSpawn`（273 字节 getCharInfo 走到 map/spawn）与 `readTransferSpawn`（26 字节 getWarpToMap 直取 map/spawn/hp）——**两种 WARP_TO_MAP 形状不同，别共用**；`spawnTailPos`（SPAWN_PLAYER 尾部 35 字节固定 ⇒ 从尾部倒数解 pos/stance）。
+12. **live 冒烟（真实 wz）**：骑士团建角（jobType=0 → map 130030000）登录 → `WARP_TO_MAP map=130030000 spawn=0` + `SPAWN_PLAYER pos=(-178,-12)`（= portal 0 坐标）；`CHANGE_MAP 10000`（map 0 的转送表项）→ `ENABLE_ACTIONS` + `TRANSFER map=10000 spawn=0 hp=50` + `pos=(-93,450)`，同图观察者收 `REMOVE_PLAYER_FROM_MAP(20)`；`CHANGE_MAP_SPECIAL out00`（tm=20000/tn=in00）→ `TRANSFER map=20000 spawn=1` + `pos=(-140,273)`。服务端日志 `player changed map from=0 to=10000 portal=0`/`from=10000 to=20000 portal=1`，无 WARN/ERROR。测完 `-remove` 两号 + 停进程。
+13. **探针**：`-changemap "targetid:portal"` / `-changemapspecial <portal>` / `-innerportal "portal:x,y"`；`decodeWarpToMap` 按 marker byte（b[7]：1=getCharInfo / 3=transfer）分两形；`decodeSpawnPlayer` 顺带解 pos/stance；UPDATE_STATS 空掩码 → `[ENABLE_ACTIONS]`。
+14. **未做（记档）**：换频道（P4.8，`getChannelChange` + `updateLoginState(1)` 的 accounts DAO 写 + 客户端重连流）；portal script（P7）；`updateSingleStat(HP)`（P5.1）；`saveToDB` 在换图时落库（P5.4——现在换图后重启会回到旧图，Java 是换图即存）。
+15. **提交前必做**：本轮改动未提交。建议提交前用独立 worktree 验提交树（`git worktree add --detach <tmp> HEAD` → build/test → remove），历史两次靠它抓出过提交树编译失败。
 
 ### 断点 O 会话（2026-09-12，P4.3b 地图实例数据 Map.wz；提交 fbc1bf9）
 
@@ -445,15 +463,13 @@ go test  ./...                                   ✅ 全绿
 
 ## 四、断点与下一步（按优先级）
 
-### 断点 O（当前）：P4.3b 地图实例数据已落地，下一步「换图（CHANGE_MAP）」/ P4.6 NPC 交互占位
-- **P4.3b 已收口**（见 §二 断点 O）：`internal/mapp` 的 `mapdata.go`/`portal.go`/`foothold.go`/`factory.go`（Portal/Foothold/LifeSpawn/MapData + Factory），`channel.Server.SetWZ` 接线，真实数据 4259 张图 0 错误、48,456 个怪出生点全部命中 foothold。
-- **最短的一条可见收益（推荐下一轮）**：把 `Portal`/`ReturnMapID`/`ForcedReturnID` 接进**登录出生点**，替掉 `WARP_TO_MAP` 里写死的 (0,0)：
-  - Java `MapleCharacter.loadCharFromDB:643-656`（与 `:918-932` 重复一份）的顺序是：`map = factory.getMap(mapid)` → null 则 `getMap(100000000)` → `if (map.getForcedReturnId() != 999999999) map = map.getForcedReturnMap()` → `portal = map.getPortal(initialSpawnPoint)` → **null 则 `getPortal(0)` 且 `initialSpawnPoint = 0`** → `setPosition(portal.getPosition())`。
-  - 落点：`internal/channel/login.go` 的 `loggedIn2`（现在只写 `WARP_TO_MAP` + `TEMP_STATS_RESET` + `map.AddPlayer`）与 `internal/packet/packet.go` 的 `CharInfoPacket`/`WARP_TO_MAP` 的 `spawn` 字段（现在直接写 `characters.spawnpoint`）。做完 `PROGRESS` 里 P4.3 的"spawn 包 pos 写 (0,0)"偏差即可勾掉。
-  - **注意**：`Portal(0)` 可能为 nil（Java 会 NPE），Go 要 nil 检查后回退到 (0,0)。
-- **换图 handler（第二候选，P4.3b 的下一个真消费方）**：`CHANGE_MAP(0x21)` / `CHANGE_MAP_SPECIAL(0x61)` 在 `channelHandler.OnPacket` 里**还没有分支**；Java 在 `PlayerHandler:1245-1253`（`getPortal(readMapleAsciiString())` → `enterPortal`）与 `:1255+`。`enterPortal` 的保真点：**有 `script` 的传送门永不自动换图**（else-if 结构），`tm == 999999999` = 不换图，目标图找不到 `tn` 时**静默回退到目标图的 portal 0**；换图后 `WARP_TO_MAP` 的 portal id 只有 **1 个字节**。
-- **P4.6（第三候选）**：NPC 交互占位（点击 NPC 触发脚本占位，完整化在 P7 的 goja 宿主 API）。
-- **聊天广播的两条语义别再混**（§二 断点 N.5）：公屏 = Point 重载（**有**视野过滤、**含**自己）；表情 = boolean 重载（无限视野、排除自己）；移动也是 boolean 重载（无限视野、排除自己）。
+### 断点 P（当前）：P4.7 出生点与换图已完成（未提交），下一步 P4.6 NPC 交互 / P4.8 换频道 / P5.1
+- **P4.7 已收口**（见 §二 断点 P）：出生点从 portal 解析、`CHANGE_MAP` 三族、`getWarpToMap` 传送包、10+1 测试、live 冒烟 0→10000→20000 全过。**改动尚未提交**（提交前建议 worktree 验提交树）。
+- **推荐下一轮（P4.6 NPC 交互占位）**：`NPC_TALK`(recv 0x94 附近，`recvops.properties` 里 `TALK_TO_NPC`) 的 handler + `NPC_MORE_TALK` 对话占位——点击 NPC 回一个"暂不支持"或直通 `NPCScriptManager` 的占位桩（完整化在 P7 goja）。Java 落点 `handling/channel/handler/NPCHandler`；注意 v079 的 NPC 对话封包（`SPAWN_NPC`/`NPC_TALK`/`NPC_DIALOG`)尚未在 `internal/packet` 出现，需要先对拍 `MaplePacketCreator.getNPCTalk`。
+- **P4.8 换频道（第二候选）**：`CHANGE_MAP` 空 body 分支（`PlayerHandler.ChangeMap:1261-1272`）：`saveToDB` + `ChannelServer.removePlayer`（= PlayerStorage 注销 + World.Find forceDeregister，**不动地图**）+ `c.updateLoginState(1)`（**需要新的 accounts DAO 写**：`UPDATE accounts SET loggedin=1, SessionIP=?, lastlogin=now`，P2 只做了 ResetAccountLogin=0）+ `getChannelChange(ip, port)`（CHANGE_CHANNEL 0x0013 + byte 1 + ip4 + short port，**ZEV 传的是频道自身 ip:port**，与"回登录服"的常规实现不同，保真即照搬）。做完可顺带把挂起表 CharacterTransfer 的**真实跨频道流转**验掉（现在只有单频道内的单测路径）。
+- **P5.1 入口（若想先做角色本体）**：`MapleCharacter` 本体 + `sp` 列解析（`remainingSP`）+ `updateSingleStat`（换图复活的 HP 单属性包在等它）。
+- **换图已解决的旧偏差**：P4.3 的"spawn 包 pos 写 (0,0)"、P4.3b 的"Portal/ReturnMapID/ForcedReturnID 未消费"两条均已勾掉；**换图不落库**是新的已知偏差（Java `changeMapInternal` 首行 `saveToDB`，Go 等 P5.4 存档）。
+- **聊天/移动/换图的广播语义三件套（勿混）**：公屏 = Point 重载（有视野过滤、含自己）；表情/移动 = boolean 重载（无限视野、排除自己）；**换图 = 先发传送包，旧图 despawn 广播（排除自己）、新图 spawn 广播（含自己）**。
 - **P4.3 的掉落接入点已留好**：`life.NewMonsterInformationProvider(db)` → `RetrieveDrop(ctx, mobID)` / `GlobalDrop()`；`cmd/gms` 现在只打 `drop tables loaded` 统计日志（未持有 provider），届时把 provider 挂到频道服即可。掉落 roll 语义在 `MapleMap.dropFrom...`：普通掉落 `Randomizer.nextInt(999999) >= chance*rate*dropMod*…`，全局掉落 `nextInt(999999) >= chance`（**不**乘倍率），另注意全局那行 Java 反编译出的 `continent >= 0 && >= 10 && >= 100 && >= 1000` 等价于 `continent >= 1000 才跳过`
 - **P3.3 未完切片**（Item / Skill / Mob / Npc / Reactor）**按需增量补**，不要在 P4 前摊大——它们都是"需要时再搬"的纯缓存，缺哪块补哪块
 - **GORM 使用铁律（P4 起新代码必读）**：① 写入模型**不加 `default:` tag**（零值会被列默认值吞，见 §二 断点 I.6）；② `salt = NULL` 用 map 值 `nil` 而非空串；③ 自增 PK 的外部传入 struct 走 Create 前归零 ID；④ MySQL DSN 依赖 openMySQL 的 forceParseTime，勿绕过 Open 直连
@@ -506,9 +522,9 @@ I:\GMS
 │   ├── protocol\ ✅ (opcodes_gen + reader + writer + charset + tests)
 │   ├── netw\    ✅ (session[+State 槽] + codec + tests)
 │   ├── world\   ✅ P4.1（registry.go：LoginServer.loginAuth/loginIPAuth 票据；find.go：World.Find 子集 + 4 测试）
-│   ├── packet\  ✅ P4.2+P4.3+P4.4+P4.5（共享层：packet.go[AddCharStats/addCharLook/CharInfoPacket/TEMP_STATS_RESET/SERVERMESSAGE/SpawnPlayerPacket/RemovePlayerFromMapPacket/MovePlayerPacket] + **chat.go[getChatText/facialExpression/getWhisper/getWhisperReply/getFindReply(WithMap)]** + rand.go[PlayerRandomStream/CRand32] + 7 测试）
+│   ├── packet\  ✅ P4.2+P4.3+P4.4+P4.5+P4.7（共享层：packet.go[AddCharStats/addCharLook/CharInfoPacket/TEMP_STATS_RESET/SERVERMESSAGE/SpawnPlayerPacket/RemovePlayerFromMapPacket/MovePlayerPacket] + **chat.go[getChatText/facialExpression/getWhisper/getWhisperReply/getFindReply(WithMap)]** + **warp.go[getWarpToMap 传送包 26 字节 + enableActions 共享]** + rand.go[PlayerRandomStream/CRand32] + 11 测试）
 │   ├── mapp\    ✅ P4.2+P4.3+P4.3b+P4.5（map.go：地图实例[id + 玩家集合 + **data *MapData**] + spawn/despawn 视野广播 AddPlayer/RemovePlayer/Broadcast + BroadcastRanged（Point 重载，maxViewRangeSq 过滤，含发送者）+ MaxViewRangeSq + Player.SendSpawnData/DespawnData/Position()；**P4.3b：mapdata/portal/foothold/factory —— MapData/Portal/FootholdTree/LifeSpawn + MapImagePath/LoadData/Factory + FieldLimitType** + testdata\wz（3 个手写夹具）+ 20 测试）
-│   ├── channel\ ✅ P4.1+P4.2+P4.3+P4.4+P4.5（server.go：多频道 7574+channel + 同源 hello + 地图注册表 + 顶号 + P4.5b configvalues 开关装载 + **P4.3b SetWZ/mapData（Map(id) 首次创建时装 Map.wz 数据）**；players.go：PlayerStorage + World.Find 副作用 + load 回调 + CharacterTransfer 挂起表 + mapp.Player 实现 + 坐标态 RWMutex 保护；login.go：Loggedin2 进图链；movement.go：MovePlayer；chat.go：GeneralChat/ChangeEmotion/Whisper_Find + 21 测试）
+│   ├── channel\ ✅ P4.1+P4.2+P4.3+P4.4+P4.5+P4.7（server.go：多频道 7574+channel + 同源 hello + 地图注册表 + 顶号 + P4.5b configvalues 开关装载 + **P4.3b SetWZ/mapData（Map(id) 首次创建时装 Map.wz 数据）** + hasMapFactory；players.go：PlayerStorage + World.Find 副作用 + load 回调 + CharacterTransfer 挂起表 + mapp.Player 实现 + 坐标/地图态 RWMutex 保护 + SetMapID/HP/IsAlive；login.go：Loggedin2 进图链（**P4.7 起出生点走 resolveSpawn**）；movement.go：MovePlayer；chat.go：GeneralChat/ChangeEmotion/Whisper_Find；**warp.go：resolveSpawn/changeMapPortal/enterPortal/CHANGE_MAP 三族 + 转送表 + 复活分支**；testdata\wz 手写夹具 7 img + 37 测试）
 │   ├── login\   ✅ P2.2+P2.3+P2.4+P2.5+P4.1 (server/packets/util/crypto/auth/worlds/chars/select/register + 测试 44 个 + testdata\golden_login.txt)
 │   ├── life\    ✅ P3.5 (drops.go：MapleMonsterInformationProvider 掉落缓存 + 6 测试)
 │   ├── dropgen\ ✅ P3.5 (chance.go/dropgen.go/sql.go：MonsterDropCreator 移植 + 8 测试)
@@ -516,7 +532,7 @@ I:\GMS
 ├── _handing\, _client\, _legacy_main.go   # pre-refactor 残留（下划线前缀=Go 工具忽略；内容原封保留，git 可 checkout）
 ├── tools\
 │   ├── genopcodes\ + genopcodes.exe
-│   ├── protocoltest\ + protocoltest.exe   # -login/-serverlist/-status/-charlist/-selectchar/-deletechar/-loggedinas/-move 探针（P4.3 加 -hold 持续监听；**P4.5 加 -chat/-emote/-whisper/-find**）+ SERVER_IP/SERVERMESSAGE/WARP_TO_MAP(0x0081)/TEMP_STATS_RESET/SPAWN_PLAYER(0x00A2)/REMOVE_PLAYER_FROM_MAP(0x00A3)/MOVE_PLAYER(0x00BB)/**CHATTEXT(0x00A4)/FACIAL_EXPRESSION(0x00C3)/WHISPER(0x008B)** 解码
+│   ├── protocoltest\ + protocoltest.exe   # -login/-serverlist/-status/-charlist/-selectchar/-deletechar/-loggedinas/-move 探针（P4.3 加 -hold 持续监听；P4.5 加 -chat/-emote/-whisper/-find；**P4.7 加 -changemap/-changemapspecial/-innerportal**）+ SERVER_IP/SERVERMESSAGE/**WARP_TO_MAP(0x0081，getCharInfo 与 getWarpToMap 两形按 marker 分流)**/TEMP_STATS_RESET/**ENABLE_ACTIONS(UPDATE_STATS 空掩码)**/SPAWN_PLAYER(0x00A2，**含尾部 pos/stance**)/REMOVE_PLAYER_FROM_MAP(0x00A3)/MOVE_PLAYER(0x00BB)/CHATTEXT(0x00A4)/FACIAL_EXPRESSION(0x00C3)/WHISPER(0x008B) 解码
 │   ├── readlog.ps1                        # 共享读方式打印 bin\gms_out.log（运行中的日志被独占，直接 Get-Content 会失败）
 │   ├── dropexport\ + dropexport.exe       # P3.5：从权威 079-max2 库导出掉落表为可移植 SQL（-stats/-tables/-batch）
 │   ├── wztosql\ + wztosql.exe             # P3.5：wz 侧掉落重建（MonsterDropCreator）+ -diff 漂移对比（不写库）

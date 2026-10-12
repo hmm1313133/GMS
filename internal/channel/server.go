@@ -185,6 +185,16 @@ func (s *Server) SetWZ(root *wzs.Root) {
 	s.log.Info("map data wired", "wz", p.Name())
 }
 
+// hasMapFactory reports whether a Map.wz source is wired at all. It separates
+// "this map image is missing" (a Java-level fallback case) from the DB-only
+// degraded startup, where no map has data and the port must not collapse every
+// character onto the fallback map.
+func (s *Server) hasMapFactory() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.mapFactory != nil
+}
+
 // mapData returns the loaded data of a map id, nil when no wz is wired or the
 // image could not be loaded (the factory warns once per id).
 func (s *Server) mapData(id int) *mapp.MapData {
@@ -504,6 +514,12 @@ func (h channelHandler) OnPacket(s *netw.Session, body []byte) {
 		h.handlePlayerLoggedIn(s, protocol.NewReader(body[2:]))
 	case protocol.RecvMOVE_PLAYER: // 0x24 - Java PlayerHandler.MovePlayer
 		h.handleMovePlayer(s, protocol.NewReader(body[2:]))
+	case protocol.RecvCHANGE_MAP: // 0x21 - Java PlayerHandler.ChangeMap
+		h.handleChangeMap(s, protocol.NewReader(body[2:]))
+	case protocol.RecvCHANGE_MAP_SPECIAL: // 0x61 - Java PlayerHandler.ChangeMapSpecial
+		h.handleChangeMapSpecial(s, protocol.NewReader(body[2:]))
+	case protocol.RecvUSE_INNER_PORTAL: // 0x62 - Java PlayerHandler.InnerPortal
+		h.handleInnerPortal(s, protocol.NewReader(body[2:]))
 	case protocol.RecvGENERAL_CHAT: // 0x2D - Java ChatHandler.GeneralChat
 		h.handleGeneralChat(s, protocol.NewReader(body[2:]))
 	case protocol.RecvFACE_EXPRESSION: // 0x2F - Java PlayerHandler.ChangeEmotion

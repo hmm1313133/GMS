@@ -164,12 +164,51 @@ func (p *Player) DespawnData() []byte {
 	return packet.RemovePlayerFromMapPacket(p.ID)
 }
 
-// MapID returns the map the player stands on (Java getMapId).
+// MapID returns the map the player stands on (Java getMapId). The read shares
+// the map-state lock with SetMapID: the duplicate-account sweep and the logout
+// path read it from other goroutines while a warp writes it.
 func (p *Player) MapID() int {
+	p.RLock()
+	defer p.RUnlock()
 	if p.Chr != nil {
 		return p.Chr.Map
 	}
 	return p.MapIDVal
+}
+
+// SetMapID records the map the character stands on (Java `map = to` inside
+// MapleCharacter.changeMapInternal). The loaded row is the field every packet
+// path reads, so the fallback field is only kept in sync for a player without a
+// row. The write happens on the moving player's own goroutine, but other
+// goroutines read it through MapID (the logout and duplicate-account sweeps),
+// hence the lock.
+func (p *Player) SetMapID(id int) {
+	p.Lock()
+	p.MapIDVal = id
+	if p.Chr != nil {
+		p.Chr.Map = id
+	}
+	p.Unlock()
+}
+
+// HP returns the character's current HP (Java getStat().getHp); the warp packet
+// carries it as a short.
+func (p *Player) HP() int {
+	if p.Chr != nil {
+		return p.Chr.HP
+	}
+	return 0
+}
+
+// IsAlive ports MapleCharacter.isAlive (hp > 0). An alive character takes the
+// normal transfer path, a dead one is revived at the map's return map.
+func (p *Player) IsAlive() bool { return p.HP() > 0 }
+
+// SetHP ports MapleStat.setHp (the revive path sets 50).
+func (p *Player) SetHP(hp int) {
+	if p.Chr != nil {
+		p.Chr.HP = hp
+	}
 }
 
 // AccountID returns the owning account id (Java getAccountID).
