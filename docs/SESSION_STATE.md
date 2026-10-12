@@ -3,7 +3,7 @@
 > 用途：跨会话恢复工作现场。加载本文件后可从"断点"继续重构。
 > 配套：PLAN.md（总方案）、PROGRESS.md（阶段勾选）、FILETRACK.md（533 文件级状态）。
 
-保存时间：2026-10-11（P4.7 出生点与换图：portal 出生点解析 + CHANGE_MAP 族 + getWarpToMap 传送包；**代码完成、全测绿、live 冒烟过，未提交**）
+保存时间：2026-10-13（P4.7 出生点与换图：portal 出生点解析 + CHANGE_MAP 族 + getWarpToMap 传送包；**已提交 162cdae，独立 worktree 验提交树全绿**；当前推进 P4.6 NPC 交互占位）
 工作目录：`I:\GMS`（go module 名 `GMS`，Go 1.25.5）
 目标：将 `I:\Zevms`（079MAX2/ZEVMS Java）重构为 Go，按 P0->P11 推进。
 
@@ -26,7 +26,7 @@ go test  ./...                                   ✅ 全绿
 - **live 验证全过（GORM 后）**：MySQL 只读冒烟（账号/角色真表/掉落 900/14243/16）+ SQLite 完整握手（auto-register → CHOOSE_GENDER → SERVERLIST → SERVERSTATUS → CHARLIST）。
 - ✅ **`go build ./...`（全包）恢复全绿**：本会话把 pre-refactor 残留改名隔离（`main.go`→`_legacy_main.go`、`handing`→`_handing`、`client`→`_client`；下划线前缀是 Go 工具链官方忽略机制，**文件内容原封未动、可随时改回**，比原计划的 cleanup-oldlayout.ps1 删除方案更保守）。`go mod tidy` 随之首次跑通，gnet/zap/properties/maplelib 等垃圾依赖从 go.mod 清除。
 
-### 断点 P 会话（2026-10-11，P4.7 出生点与换图；未提交）
+### 断点 P 会话（2026-10-11，P4.7 出生点与换图；提交 162cdae）
 
 1. **范围**：断点 O 列的两条"最短可见收益"一次做完——登录出生点接 portal 数据 + `CHANGE_MAP`(0x21)/`CHANGE_MAP_SPECIAL`(0x61)/`USE_INNER_PORTAL`(0x62) 三族 handler + `getWarpToMap` 传送包。P4.3 的"spawn 包 pos 写 (0,0)"既有偏差已勾掉。
 2. **新文件**：`internal/packet/warp.go`（`WarpToMapPacket`/`EnableActionsPacket`——后者从 `login/packets.go` 上移共享，login 改为委托，字节与断言不变）、`internal/channel/warp.go`（`resolveSpawn`/`mapForWarp`/`changeMapPortal`/`enterPortal(ByName)`/`handleChangeMap(Special)`/`handleInnerPortal`/`tableWarp`/`reviveAtReturnMap`）、`internal/channel/warp_test.go`（10 个）+ `internal/channel/testdata/wz/Map.wz/Map/{Map0,Map1,Map9}/` 手写夹具 7 个 img。
@@ -42,7 +42,7 @@ go test  ./...                                   ✅ 全绿
 12. **live 冒烟（真实 wz）**：骑士团建角（jobType=0 → map 130030000）登录 → `WARP_TO_MAP map=130030000 spawn=0` + `SPAWN_PLAYER pos=(-178,-12)`（= portal 0 坐标）；`CHANGE_MAP 10000`（map 0 的转送表项）→ `ENABLE_ACTIONS` + `TRANSFER map=10000 spawn=0 hp=50` + `pos=(-93,450)`，同图观察者收 `REMOVE_PLAYER_FROM_MAP(20)`；`CHANGE_MAP_SPECIAL out00`（tm=20000/tn=in00）→ `TRANSFER map=20000 spawn=1` + `pos=(-140,273)`。服务端日志 `player changed map from=0 to=10000 portal=0`/`from=10000 to=20000 portal=1`，无 WARN/ERROR。测完 `-remove` 两号 + 停进程。
 13. **探针**：`-changemap "targetid:portal"` / `-changemapspecial <portal>` / `-innerportal "portal:x,y"`；`decodeWarpToMap` 按 marker byte（b[7]：1=getCharInfo / 3=transfer）分两形；`decodeSpawnPlayer` 顺带解 pos/stance；UPDATE_STATS 空掩码 → `[ENABLE_ACTIONS]`。
 14. **未做（记档）**：换频道（P4.8，`getChannelChange` + `updateLoginState(1)` 的 accounts DAO 写 + 客户端重连流）；portal script（P7）；`updateSingleStat(HP)`（P5.1）；`saveToDB` 在换图时落库（P5.4——现在换图后重启会回到旧图，Java 是换图即存）。
-15. **提交前必做**：本轮改动未提交。建议提交前用独立 worktree 验提交树（`git worktree add --detach <tmp> HEAD` → build/test → remove），历史两次靠它抓出过提交树编译失败。
+15. **提交**：`162cdae`（代码+文档同提交）；提交后已用独立 worktree（`git worktree add --detach I:\gms-wt-verify HEAD`）实测 `go build ./...` + `go test ./...` 全绿（14 包 ok、无 FAIL），随后 worktree 已移除。
 
 ### 断点 O 会话（2026-09-12，P4.3b 地图实例数据 Map.wz；提交 fbc1bf9）
 
@@ -463,8 +463,8 @@ go test  ./...                                   ✅ 全绿
 
 ## 四、断点与下一步（按优先级）
 
-### 断点 P（当前）：P4.7 出生点与换图已完成（未提交），下一步 P4.6 NPC 交互 / P4.8 换频道 / P5.1
-- **P4.7 已收口**（见 §二 断点 P）：出生点从 portal 解析、`CHANGE_MAP` 三族、`getWarpToMap` 传送包、10+1 测试、live 冒烟 0→10000→20000 全过。**改动尚未提交**（提交前建议 worktree 验提交树）。
+### 断点 P（当前）：P4.7 已提交（162cdae），进行中：P4.6 NPC 交互占位
+- **P4.7 已收口**（见 §二 断点 P）：出生点从 portal 解析、`CHANGE_MAP` 三族、`getWarpToMap` 传送包、10+1 测试、live 冒烟 0→10000→20000 全过。已提交 `162cdae` 并用独立 worktree 验提交树全绿。
 - **推荐下一轮（P4.6 NPC 交互占位）**：`NPC_TALK`(recv 0x94 附近，`recvops.properties` 里 `TALK_TO_NPC`) 的 handler + `NPC_MORE_TALK` 对话占位——点击 NPC 回一个"暂不支持"或直通 `NPCScriptManager` 的占位桩（完整化在 P7 goja）。Java 落点 `handling/channel/handler/NPCHandler`；注意 v079 的 NPC 对话封包（`SPAWN_NPC`/`NPC_TALK`/`NPC_DIALOG`)尚未在 `internal/packet` 出现，需要先对拍 `MaplePacketCreator.getNPCTalk`。
 - **P4.8 换频道（第二候选）**：`CHANGE_MAP` 空 body 分支（`PlayerHandler.ChangeMap:1261-1272`）：`saveToDB` + `ChannelServer.removePlayer`（= PlayerStorage 注销 + World.Find forceDeregister，**不动地图**）+ `c.updateLoginState(1)`（**需要新的 accounts DAO 写**：`UPDATE accounts SET loggedin=1, SessionIP=?, lastlogin=now`，P2 只做了 ResetAccountLogin=0）+ `getChannelChange(ip, port)`（CHANGE_CHANNEL 0x0013 + byte 1 + ip4 + short port，**ZEV 传的是频道自身 ip:port**，与"回登录服"的常规实现不同，保真即照搬）。做完可顺带把挂起表 CharacterTransfer 的**真实跨频道流转**验掉（现在只有单频道内的单测路径）。
 - **P5.1 入口（若想先做角色本体）**：`MapleCharacter` 本体 + `sp` 列解析（`remainingSP`）+ `updateSingleStat`（换图复活的 HP 单属性包在等它）。
